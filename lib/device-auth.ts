@@ -37,7 +37,7 @@ export async function hashPin(pin: string, saltBase64: string) {
     name: "PBKDF2",
     hash: "SHA-256",
     salt: base64ToBytes(saltBase64),
-    iterations: 120_000,
+    iterations: 25_000,
   }, key, 256);
   return bytesToHex(bits);
 }

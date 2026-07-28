@@ -20,6 +20,13 @@ type TodayScore = {
   total: number;
 };
 
+type TodayFocus = {
+  date: string;
+  focusSeconds: number;
+};
+
+type SubjectProgressMap = Record<Exclude<StudySubject, "理社ミックス">, number>;
+
 type AuthUser = {
   id: string;
   displayName: string;
@@ -34,6 +41,14 @@ type FreeStudySession = {
   awaySeconds: number;
   idleSeconds: number;
   savedAt: string;
+};
+
+type RegisteredStudyMate = {
+  id: string;
+  displayName: string;
+  focusSeconds: number;
+  questionsSolved: number;
+  isMe: boolean;
 };
 
 function toGivenNameOnly(value: string) {
@@ -79,8 +94,12 @@ type WeeklyTestData = {
 };
 
 const TODAY_SCORE_STORAGE_KEY = "study-base-today-score";
+const TODAY_FOCUS_STORAGE_KEY = "study-base-today-focus";
+const SUBJECT_PROGRESS_STORAGE_KEY = "study-base-subject-progress";
+const LOGIN_DAYS_STORAGE_KEY = "study-base-login-days";
 const REVIEW_QUEUE_STORAGE_KEY = "study-base-review-queue";
 const FREE_STUDY_SESSIONS_STORAGE_KEY = "study-base-free-study-sessions";
+const QUESTIONS_PER_SUBJECT = 1000;
 const QUESTIONS_PER_SET = 20;
 const PRACTICE_TIMER_MAX_MINUTES = 15;
 const PRACTICE_TIMER_DEFAULT_MINUTES = 15;
@@ -253,6 +272,23 @@ const subjects: Array<{ key: Exclude<StudySubject, "理社ミックス">; icon: 
   { key: "社会", icon: "●", color: "yellow", progress: 46, label: "地理・歴史・公民｜1000問" },
 ];
 
+const defaultSubjectProgress = subjects.reduce((progress, subject) => ({
+  ...progress,
+  [subject.key]: Math.round((subject.progress / 100) * QUESTIONS_PER_SUBJECT),
+}), {} as SubjectProgressMap);
+
+function normalizeSubjectProgress(value: unknown): SubjectProgressMap {
+  const source = typeof value === "object" && value !== null ? value as Partial<Record<keyof SubjectProgressMap, unknown>> : {};
+  return subjects.reduce((progress, subject) => ({
+    ...progress,
+    [subject.key]: Math.max(0, Math.min(QUESTIONS_PER_SUBJECT, Number(source[subject.key] ?? defaultSubjectProgress[subject.key]))),
+  }), {} as SubjectProgressMap);
+}
+
+function subjectProgressPercent(solvedCount: number) {
+  return Math.min(100, Math.round((solvedCount / QUESTIONS_PER_SUBJECT) * 100));
+}
+
 const questions = [
   { subject: "理科", unit: "生物 / 植物", question: "胚珠が子房に包まれている植物を何といいますか。", hint: "『被』には、おおわれているという意味があります。", answer: "被子植物", explanation: "被子植物では、受粉後に胚珠が種子に、子房が果実になります。" },
   { subject: "理科", unit: "生物 / 植物", question: "胚珠が子房に包まれず、むき出しになっている植物を何といいますか。", hint: "マツやイチョウが代表例です。", answer: "裸子植物", explanation: "裸子植物には子房がなく、胚珠がむき出しになっています。" },
@@ -288,7 +324,6 @@ const liveStudyMates = [
   { name: "そら", startTime: "19:42", subject: "数学", unit: "一次関数", minutes: 128, color: "purple", tier: "上位ペース", pace: "近畿55＋" },
   { name: "みお", startTime: "20:18", subject: "英語", unit: "不定詞", minutes: 92, color: "coral", tier: "平均ペース", pace: "近畿55目標" },
   { name: "りく", startTime: "20:51", subject: "理科", unit: "電流・磁界", minutes: 59, color: "green", tier: "追い上げペース", pace: "基礎固め" },
-  { name: "ゆい", startTime: "21:24", subject: "社会", unit: "近代日本", minutes: 26, color: "yellow", tier: "平均ペース", pace: "近畿55目標" },
 ];
 
 function formatStudyTime(minutes: number) {
@@ -367,11 +402,14 @@ export default function Home() {
   const [awayCount, setAwayCount] = useState(0);
   const [idleSeconds, setIdleSeconds] = useState(0);
   const [idleCount, setIdleCount] = useState(0);
-  const [baseTodayFocusSeconds, setBaseTodayFocusSeconds] = useState(86 * 60);
+  const [baseTodayFocusSeconds, setBaseTodayFocusSeconds] = useState(0);
   const [trackedFocusSeconds, setTrackedFocusSeconds] = useState(0);
+  const [subjectProgressCounts, setSubjectProgressCounts] = useState<SubjectProgressMap>(defaultSubjectProgress);
   const [guardianEnabled, setGuardianEnabled] = useState(false);
   const [rankPeriod, setRankPeriod] = useState("今日");
   const [liveMinutes, setLiveMinutes] = useState(() => liveStudyMates.map((mate) => mate.minutes));
+  const [registeredStudyMates, setRegisteredStudyMates] = useState<RegisteredStudyMate[]>([]);
+  const [loginDaysCount, setLoginDaysCount] = useState(1);
   const [dailyMessageDate, setDailyMessageDate] = useState(() => getJstDateKey());
   const [studentLocked, setStudentLocked] = useState(() => isStudentLockedByTime());
   const [weeklyTest, setWeeklyTest] = useState<WeeklyTestData | null>(null);
@@ -430,6 +468,22 @@ export default function Home() {
         setAuthStatus("setup");
       });
   }, []);
+
+  useEffect(() => {
+    if (!authUser) return;
+    try {
+      const scopedKey = userStorageKey(LOGIN_DAYS_STORAGE_KEY, authUser.id);
+      const savedDays = window.localStorage.getItem(scopedKey) ?? window.localStorage.getItem(LOGIN_DAYS_STORAGE_KEY);
+      const parsedDays = savedDays ? JSON.parse(savedDays) : [];
+      const daySet = new Set(Array.isArray(parsedDays) ? parsedDays.filter((value) => typeof value === "string") : []);
+      daySet.add(getLocalDateKey());
+      const nextDays = [...daySet].sort();
+      window.localStorage.setItem(scopedKey, JSON.stringify(nextDays));
+      setLoginDaysCount(Math.max(1, nextDays.length));
+    } catch {
+      setLoginDaysCount(1);
+    }
+  }, [authUser]);
 
   useEffect(() => {
     if (!authUser) return;
@@ -620,6 +674,7 @@ export default function Home() {
         const emptyScore = { date: getLocalDateKey(), correct: 0, total: 0 };
         setTodayScore(emptyScore);
         try { window.localStorage.setItem(userStorageKey(TODAY_SCORE_STORAGE_KEY, authUser.id), JSON.stringify(emptyScore)); } catch { /* Continue without browser storage. */ }
+        try { window.localStorage.setItem(userStorageKey(TODAY_FOCUS_STORAGE_KEY, authUser.id), JSON.stringify({ date: getLocalDateKey(), focusSeconds: 0 })); } catch { /* Continue without browser storage. */ }
         setBaseTodayFocusSeconds(0);
         setTrackedFocusSeconds(0);
         setAwaySeconds(0);
@@ -659,6 +714,42 @@ export default function Home() {
 
   useEffect(() => {
     if (!authUser) return;
+    try {
+      const scopedKey = userStorageKey(TODAY_FOCUS_STORAGE_KEY, authUser.id);
+      const savedFocus = window.localStorage.getItem(scopedKey) ?? window.localStorage.getItem(TODAY_FOCUS_STORAGE_KEY);
+      if (!savedFocus) return;
+
+      const parsedFocus = JSON.parse(savedFocus) as Partial<TodayFocus>;
+      if (parsedFocus.date === getLocalDateKey() && typeof parsedFocus.focusSeconds === "number") {
+        setBaseTodayFocusSeconds(Math.max(0, parsedFocus.focusSeconds));
+        setTrackedFocusSeconds(0);
+        window.localStorage.setItem(scopedKey, savedFocus);
+      }
+    } catch {
+      window.localStorage.removeItem(userStorageKey(TODAY_FOCUS_STORAGE_KEY, authUser.id));
+    }
+  }, [authUser]);
+
+  useEffect(() => {
+    if (!authUser) return;
+    try {
+      const scopedKey = userStorageKey(SUBJECT_PROGRESS_STORAGE_KEY, authUser.id);
+      const savedProgress = window.localStorage.getItem(scopedKey) ?? window.localStorage.getItem(SUBJECT_PROGRESS_STORAGE_KEY);
+      if (!savedProgress) {
+        setSubjectProgressCounts(defaultSubjectProgress);
+        return;
+      }
+      const nextProgress = normalizeSubjectProgress(JSON.parse(savedProgress));
+      setSubjectProgressCounts(nextProgress);
+      window.localStorage.setItem(scopedKey, JSON.stringify(nextProgress));
+    } catch {
+      setSubjectProgressCounts(defaultSubjectProgress);
+      window.localStorage.removeItem(userStorageKey(SUBJECT_PROGRESS_STORAGE_KEY, authUser.id));
+    }
+  }, [authUser]);
+
+  useEffect(() => {
+    if (!authUser) return;
     void fetch("/api/guardian-report")
       .then((response) => response.ok ? response.json() : null)
       .then((data) => {
@@ -666,6 +757,21 @@ export default function Home() {
         setGuardianEnabled(Boolean(data.profile.enabled));
       })
       .catch(() => undefined);
+  }, [authUser]);
+
+  useEffect(() => {
+    if (!authUser) return;
+    const loadStudyMates = () => {
+      void fetch("/api/study-mates", { cache: "no-store" })
+        .then((response) => response.ok ? response.json() : null)
+        .then((data) => {
+          if (Array.isArray(data?.students)) setRegisteredStudyMates(data.students as RegisteredStudyMate[]);
+        })
+        .catch(() => undefined);
+    };
+    loadStudyMates();
+    const studyMatesTimer = window.setInterval(loadStudyMates, 60_000);
+    return () => window.clearInterval(studyMatesTimer);
   }, [authUser]);
 
   useEffect(() => {
@@ -745,6 +851,19 @@ export default function Home() {
   }), [awaySeconds, idleSeconds, reportFocusSeconds, todayCorrect, todayTotal, todayWrong]);
   const guardianSummaryRef = useRef(guardianSummary);
   guardianSummaryRef.current = guardianSummary;
+
+  useEffect(() => {
+    if (!authUser) return;
+    try {
+      window.localStorage.setItem(
+        userStorageKey(TODAY_FOCUS_STORAGE_KEY, authUser.id),
+        JSON.stringify({ date: getLocalDateKey(), focusSeconds: reportFocusSeconds }),
+      );
+    } catch {
+      // The live card can still update even if browser storage is unavailable.
+    }
+  }, [authUser, reportFocusSeconds]);
+
   const focusIsReview = reviewQueue.length > 0;
   const focusQuestion = focusIsReview
     ? reviewQueue[0]
@@ -758,6 +877,39 @@ export default function Home() {
   const awayTimeLabel = useMemo(() => formatAwayTime(awaySeconds), [awaySeconds]);
   const idleTimeLabel = useMemo(() => formatAwayTime(idleSeconds), [idleSeconds]);
   const dailyStreakMessage = useMemo(() => getDailyStreakMessage(dailyMessageDate), [dailyMessageDate]);
+  const studyMateRows = useMemo(() => {
+    const registeredColors = ["yellow", "blue", "green", "coral", "purple"];
+    const modelRows = liveStudyMates.map((mate, index) => ({
+      id: `model-${mate.name}`,
+      name: mate.name,
+      startTime: `${mate.startTime}〜`,
+      subject: mate.subject,
+      unit: mate.unit,
+      minutes: liveMinutes[index] ?? mate.minutes,
+      color: mate.color,
+      tier: mate.tier,
+      pace: mate.pace,
+      badge: "目標",
+      isMe: false,
+    }));
+    const registeredRows = registeredStudyMates.map((student, index) => {
+      const minutes = Math.floor(Math.max(0, student.focusSeconds) / 60);
+      return {
+        id: student.id,
+        name: student.displayName,
+        startTime: student.isMe ? "自分" : "登録済",
+        subject: student.questionsSolved > 0 ? "今日の演習" : "準備中",
+        unit: student.questionsSolved > 0 ? `${student.questionsSolved}問クリア` : "まずは20問から",
+        minutes,
+        color: registeredColors[index % registeredColors.length],
+        tier: student.isMe ? "YOU" : "参加中",
+        pace: minutes > 0 ? "実記録" : "未開始",
+        badge: student.isMe ? "YOU" : "実参加",
+        isMe: student.isMe,
+      };
+    });
+    return [...modelRows, ...registeredRows];
+  }, [liveMinutes, registeredStudyMates]);
   const weeklyStartMs = weeklyTest ? new Date(weeklyTest.startsAt).getTime() : 0;
   const weeklyEndMs = weeklyTest ? weeklyStartMs + weeklyTest.durationMinutes * 60_000 : 0;
   const weeklyRemainingSeconds = weeklyTest?.kind === "active" ? Math.max(0, Math.ceil((weeklyEndMs - weeklyNow) / 1000)) : 0;
@@ -815,6 +967,7 @@ export default function Home() {
         try { window.localStorage.setItem(userStorageKey(REVIEW_QUEUE_STORAGE_KEY, authUser.id), JSON.stringify(next)); } catch { /* Keep this session's queue. */ }
         return next;
       });
+      addSubjectProgress(data.resultQuestions);
       try { window.localStorage.removeItem(`weekly-test-answers:${weeklyTest.id}:${authUser.id}`); } catch { /* Draft cleanup is optional. */ }
       window.scrollTo({ top: 0, behavior: "smooth" });
     } catch (error) {
@@ -860,7 +1013,7 @@ export default function Home() {
   }, [weeklyRemainingSeconds, weeklyResult, weeklyStarted, weeklyTest]);
 
   useEffect(() => {
-    if (!authUser || !guardianEnabled) return;
+    if (!authUser) return;
     const syncSummary = () => {
       void fetch("/api/guardian-report", {
         method: "POST",
@@ -871,7 +1024,7 @@ export default function Home() {
     syncSummary();
     const syncTimer = window.setInterval(syncSummary, 60_000);
     return () => window.clearInterval(syncTimer);
-  }, [authUser, guardianEnabled]);
+  }, [authUser]);
 
   const resetAwayTracking = () => {
     awayStartedAtRef.current = null;
@@ -957,6 +1110,31 @@ export default function Home() {
 
   const gradeQuestion = (index: number, result: "correct" | "wrong") => {
     setGrades((current) => current.map((grade, gradeIndex) => gradeIndex === index ? result : grade));
+  };
+
+  const addSubjectProgress = (completedQuestions: Question[]) => {
+    if (!authUser || completedQuestions.length === 0) return;
+    const subjectCounts = completedQuestions.reduce((counts, question) => {
+      if (question.subject === "理社ミックス") return counts;
+      if (!subjects.some((subject) => subject.key === question.subject)) return counts;
+      counts[question.subject as Exclude<StudySubject, "理社ミックス">] = (counts[question.subject as Exclude<StudySubject, "理社ミックス">] ?? 0) + 1;
+      return counts;
+    }, {} as Partial<SubjectProgressMap>);
+
+    if (Object.keys(subjectCounts).length === 0) return;
+
+    setSubjectProgressCounts((current) => {
+      const next = normalizeSubjectProgress(current);
+      for (const [subject, count] of Object.entries(subjectCounts) as Array<[keyof SubjectProgressMap, number]>) {
+        next[subject] = Math.min(QUESTIONS_PER_SUBJECT, next[subject] + count);
+      }
+      try {
+        window.localStorage.setItem(userStorageKey(SUBJECT_PROGRESS_STORAGE_KEY, authUser.id), JSON.stringify(next));
+      } catch {
+        // The progress bar still updates for this session if browser storage is unavailable.
+      }
+      return next;
+    });
   };
 
   const askSubjectTimer = (subject: StudySubject) => {
@@ -1076,6 +1254,7 @@ export default function Home() {
 
       return nextScore;
     });
+    addSubjectProgress(activeQuestions);
     setPracticePhase("complete");
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
@@ -1099,6 +1278,7 @@ export default function Home() {
     }
 
     setFocusAnswerVisible(false);
+    addSubjectProgress([focusQuestion]);
   };
 
   const saveMistakeReview = (question: Question, result: "mastered" | "again") => {
@@ -1239,7 +1419,7 @@ export default function Home() {
               </div>
               <div className="streak-card">
                 <span className="flame">✦</span>
-                <div><strong>14</strong><span>DAYS</span></div>
+                <div><strong>{loginDaysCount}</strong><span>DAYS</span></div>
                 <p>{dailyStreakMessage}</p>
               </div>
             </section>
@@ -1256,12 +1436,18 @@ export default function Home() {
                 <div className="section-heading"><div><p className="eyebrow">CHOOSE YOUR MISSION・5教科 各1000問</p><h2>好きな科目から、流れに乗ろう。</h2></div><button className="text-button" disabled={Boolean(loadingSubject)} onClick={() => askSubjectTimer("理社ミックス")}>理社ミックス →</button></div>
                 <div className="subjects-grid">
                   {subjects.map((subject) => (
-                    <button key={subject.key} className="subject-card" disabled={Boolean(loadingSubject)} onClick={() => askSubjectTimer(subject.key)}>
-                      <span className={`subject-icon ${subject.color}`}>{subject.icon}</span>
-                      <span className="subject-copy"><strong>{subject.key}</strong><small>{loadingSubject === subject.key ? "1000問を準備中…" : subject.label}</small></span>
-                      <span className="subject-progress"><span style={{ width: `${subject.progress}%` }} /></span>
-                      <span className="percent">{subject.progress}%</span>
-                    </button>
+                    (() => {
+                      const solvedCount = subjectProgressCounts[subject.key] ?? 0;
+                      const progress = subjectProgressPercent(solvedCount);
+                      return (
+                        <button key={subject.key} className="subject-card" disabled={Boolean(loadingSubject)} onClick={() => askSubjectTimer(subject.key)}>
+                          <span className={`subject-icon ${subject.color}`}>{subject.icon}</span>
+                          <span className="subject-copy"><strong>{subject.key}</strong><small>{loadingSubject === subject.key ? "1000問を準備中…" : `${Math.min(QUESTIONS_PER_SUBJECT, solvedCount)} / ${QUESTIONS_PER_SUBJECT}問`}</small></span>
+                          <span className="subject-progress"><span style={{ width: `${progress}%` }} /></span>
+                          <span className="percent">{progress}%</span>
+                        </button>
+                      );
+                    })()
                   ))}
                 </div>
               </div>
@@ -1296,16 +1482,16 @@ export default function Home() {
                 <button className="round-button" onClick={() => changeView("timer")} aria-label="タイマーを開く">▶</button>
               </article>
               <article className="friends-card">
-                <div className="section-heading compact"><div><p className="eyebrow">KINKI RIVAL PACE</p><h2>近畿圏55勢、いま進行中。</h2></div><span className="online bot-online">{liveStudyMates.length}人</span></div>
-                <p className="bot-study-note">近畿圏の偏差値55目標ペースを参考にしたライバル表示です。</p>
-                <div className="study-live-head"><span>モデル</span><span>開始</span><span>学習時間</span></div>
+                <div className="section-heading compact"><div><p className="eyebrow">KINKI RIVAL PACE</p><h2>近畿圏55勢、いま進行中。</h2></div><span className="online bot-online">{studyMateRows.length}人</span></div>
+                <p className="bot-study-note">目標ペース3人と、登録した生徒の今日の実記録を一緒に表示します。</p>
+                <div className="study-live-head"><span>仲間</span><span>開始</span><span>学習時間</span></div>
                 <div className="study-live-list">
-                  {liveStudyMates.map((mate, index) => (
-                    <div className="study-person" key={mate.name}>
+                  {studyMateRows.map((mate) => (
+                    <div className={`study-person${mate.isMe ? " me" : ""}`} key={mate.id}>
                       <span className={`friend-avatar ${mate.color}`}>{mate.name[0]}<i /></span>
-                      <div className="study-person-copy"><strong>{mate.name}<em>目標</em></strong><small>{mate.tier}｜{mate.subject}・{mate.unit}</small><b>{mate.pace}</b></div>
-                      <time>{mate.startTime}〜</time>
-                      <span className="elapsed-time">{formatStudyTime(liveMinutes[index])}</span>
+                      <div className="study-person-copy"><strong>{mate.name}<em>{mate.badge}</em></strong><small>{mate.tier}｜{mate.subject}・{mate.unit}</small><b>{mate.pace}</b></div>
+                      <time>{mate.startTime}</time>
+                      <span className="elapsed-time">{formatStudyTime(mate.minutes)}</span>
                     </div>
                   ))}
                 </div>

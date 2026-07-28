@@ -272,10 +272,19 @@ const subjects: Array<{ key: Exclude<StudySubject, "理社ミックス">; icon: 
   { key: "社会", icon: "●", color: "yellow", progress: 46, label: "地理・歴史・公民｜1000問" },
 ];
 
-const defaultSubjectProgress = subjects.reduce((progress, subject) => ({
+const legacySubjectProgress = subjects.reduce((progress, subject) => ({
   ...progress,
   [subject.key]: Math.round((subject.progress / 100) * QUESTIONS_PER_SUBJECT),
 }), {} as SubjectProgressMap);
+
+const defaultSubjectProgress = subjects.reduce((progress, subject) => ({
+  ...progress,
+  [subject.key]: 0,
+}), {} as SubjectProgressMap);
+
+function isLegacySubjectProgress(value: SubjectProgressMap) {
+  return subjects.every((subject) => value[subject.key] === legacySubjectProgress[subject.key]);
+}
 
 function normalizeSubjectProgress(value: unknown): SubjectProgressMap {
   const source = typeof value === "object" && value !== null ? value as Partial<Record<keyof SubjectProgressMap, unknown>> : {};
@@ -734,12 +743,14 @@ export default function Home() {
     if (!authUser) return;
     try {
       const scopedKey = userStorageKey(SUBJECT_PROGRESS_STORAGE_KEY, authUser.id);
-      const savedProgress = window.localStorage.getItem(scopedKey) ?? window.localStorage.getItem(SUBJECT_PROGRESS_STORAGE_KEY);
+      const savedProgress = window.localStorage.getItem(scopedKey);
       if (!savedProgress) {
         setSubjectProgressCounts(defaultSubjectProgress);
+        window.localStorage.setItem(scopedKey, JSON.stringify(defaultSubjectProgress));
         return;
       }
-      const nextProgress = normalizeSubjectProgress(JSON.parse(savedProgress));
+      const loadedProgress = normalizeSubjectProgress(JSON.parse(savedProgress));
+      const nextProgress = isLegacySubjectProgress(loadedProgress) ? defaultSubjectProgress : loadedProgress;
       setSubjectProgressCounts(nextProgress);
       window.localStorage.setItem(scopedKey, JSON.stringify(nextProgress));
     } catch {

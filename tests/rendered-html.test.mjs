@@ -79,3 +79,14 @@ test("practice grading and mistake reviews are persisted idempotently in D1", as
   assert.match(recordsHelper, /date\(attempted_at, '\+9 hours'\)/);
   assert.match(schema, /practiceAttemptBatches/);
 });
+
+test("every practice subject keeps a 20-question duplicate-free supply", async () => {
+  const route = await readFile(new URL("app/api/practice-questions/route.ts", root), "utf8");
+  assert.match(route, /while \(pool\.length < 1000/);
+  assert.match(route, /return pool\.slice\(0, 1000\)/);
+  assert.match(route, /generated-v2-/);
+  assert.match(route, /returnedQuestions\.length < count/);
+  assert.match(route, /oldestDelivered\.slice\(0, count - returnedQuestions\.length\)/);
+  assert.match(route, /poolSize: source\.length/);
+  assert.match(route, /complete: returnedQuestions\.length === count/);
+});

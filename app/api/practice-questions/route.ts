@@ -85,8 +85,8 @@ function generatedQuestions(subject: string, startIndex: number, count: number):
   const places = ["図書館", "体育館", "校庭", "公園", "教室", "科学館", "美術館", "駅前", "海辺", "山道"];
   const verbs = ["本を読んだ", "絵を描いた", "走った", "観察した", "発表した", "調べた", "練習した", "記録した", "相談した", "計画した"];
   const englishWords = [
-    ["book", "本"], ["music", "音楽"], ["school", "学校"], ["friend", "友達"], ["water", "水"],
-    ["morning", "朝"], ["family", "家族"], ["picture", "写真"], ["question", "質問"], ["summer", "夏"],
+    ["book", "本"], ["pencil", "鉛筆"], ["notebook", "ノート"], ["apple", "りんご"], ["chair", "いす"],
+    ["desk", "机"], ["bag", "かばん"], ["picture", "写真"], ["question", "質問"], ["flower", "花"],
   ] as const;
   const adjectives = [
     ["happy", "幸せな"], ["busy", "忙しい"], ["beautiful", "美しい"], ["important", "重要な"], ["popular", "人気のある"],
@@ -95,10 +95,14 @@ function generatedQuestions(subject: string, startIndex: number, count: number):
 
   for (let offset = 0; offset < count; offset++) {
     const index = startIndex + offset;
-    const name = names[index % names.length];
-    const place = places[Math.floor(index / names.length) % places.length];
-    const verb = verbs[Math.floor(index / (names.length * places.length)) % verbs.length];
-    const id = `generated-${subject}-${index + 1}`;
+    const kindDivisor = subject === subjectNames.math ? 3 : 4;
+    const scenario = Math.floor(index / kindDivisor);
+    const name = names[scenario % names.length];
+    const place = places[Math.floor(scenario / names.length) % places.length];
+    const verb = verbs[Math.floor(scenario / (names.length * places.length)) % verbs.length];
+    // Keep generated-bank revisions in the id so a changed question never
+    // collides with an older D1 delivery that used the same numeric slot.
+    const id = `generated-v2-${subject}-${index + 1}`;
 
     if (subject === subjectNames.japanese) {
       const kind = index % 4;
@@ -110,9 +114,9 @@ function generatedQuestions(subject: string, startIndex: number, count: number):
     }
 
     if (subject === subjectNames.math) {
-      const a = (index % 19) + 2;
-      const x = (Math.floor(index / 19) % 23) + 1;
-      const b = (Math.floor(index / (19 * 23)) % 17) + 1;
+      const a = (scenario % 19) + 2;
+      const x = (Math.floor(scenario / 19) % 23) + 1;
+      const b = (Math.floor(scenario / (19 * 23)) % 17) + 1;
       const c = a * x + b;
       const kind = index % 3;
       if (kind === 0) items.push({ id, subject, unit: "一次方程式", difficulty: "標準", question: `方程式 ${a}x + ${b} = ${c} を解きなさい。`, answer: `x = ${x}`, explanation: `両辺から${b}を引き、${a}で割ると x = ${x} です。` });
@@ -122,29 +126,36 @@ function generatedQuestions(subject: string, startIndex: number, count: number):
     }
 
     if (subject === subjectNames.english) {
-      const [word, meaning] = englishWords[index % englishWords.length];
-      const [adjective, adjectiveMeaning] = adjectives[Math.floor(index / englishWords.length) % adjectives.length];
-      const number = (Math.floor(index / (englishWords.length * adjectives.length)) % 30) + 1;
+      const [word, meaning] = englishWords[scenario % englishWords.length];
+      const [adjective, adjectiveMeaning] = adjectives[Math.floor(scenario / englishWords.length) % adjectives.length];
+      const number = (Math.floor(scenario / (englishWords.length * adjectives.length)) % 30) + 1;
       const kind = index % 4;
-      if (kind === 0) items.push({ id, subject, unit: "語彙", difficulty: "標準", question: `英単語「${word}」の意味を日本語で答えなさい。`, answer: meaning, explanation: `${word} は「${meaning}」という意味です。` });
-      if (kind === 1) items.push({ id, subject, unit: "語彙", difficulty: "標準", question: `「${adjectiveMeaning}」を表す英単語を書きなさい。`, answer: adjective, explanation: `${adjective} は「${adjectiveMeaning}」という意味です。` });
-      if (kind === 2) items.push({ id, subject, unit: "英文法", difficulty: "標準", question: `I have ${number} ${word}${number === 1 ? "" : "s"}. を日本語にしなさい。`, answer: `私は${number}冊の${meaning}を持っています。`, explanation: `have は「持っている」を表します。` });
-      if (kind === 3) items.push({ id, subject, unit: "英文法", difficulty: "標準", question: `This is a ${adjective} ${word}. を日本語にしなさい。`, answer: `これは${adjectiveMeaning}${meaning}です。`, explanation: `a ${adjective} ${word} で「${adjectiveMeaning}${meaning}」です。` });
+      const plural = number === 1 ? word : `${word}s`;
+      if (kind === 0) items.push({ id, subject, unit: "英文和訳", difficulty: "標準", question: `次の英文を日本語にしなさい。\nI have ${number} ${adjective} ${plural}.`, answer: `私は${adjectiveMeaning}${meaning}を${number}個持っています。`, explanation: `have は「持っている」、${adjective} は「${adjectiveMeaning}」を表します。` });
+      if (kind === 1) items.push({ id, subject, unit: "語彙", difficulty: "標準", question: `次の（　）に入る英語を書きなさい。\nI have ${number} (　).〔${adjectiveMeaning}${meaning}〕`, answer: `${adjective} ${plural}`, explanation: `「${adjectiveMeaning}」は ${adjective}、「${meaning}」は ${plural} です。` });
+      if (kind === 2) items.push({ id, subject, unit: "英文法", difficulty: "標準", question: `次の英文を日本語にしなさい。\nThis is ${word} number ${number}. It is ${adjective}.`, answer: `これは${number}番の${meaning}です。それは${adjectiveMeaning}です。`, explanation: `number ${number} は「${number}番」、${adjective} は「${adjectiveMeaning}」です。` });
+      if (kind === 3) items.push({ id, subject, unit: "英作文", difficulty: "標準", question: `「私は${adjectiveMeaning}${meaning}を${number}個持っています」を英語で書きなさい。`, answer: `I have ${number} ${adjective} ${plural}.`, explanation: `「持っています」は have を使い、数・形容詞・名詞の順に並べます。` });
     }
   }
   return items;
 }
 
 function subjectPool(subject: string) {
-  const existing = uniqueQuestions(questionBank.filter((question) => question.subject === subject));
-  return [...existing, ...generatedQuestions(subject, existing.length, Math.max(0, 1000 - existing.length))];
+  let pool = uniqueQuestions(questionBank.filter((question) => question.subject === subject));
+  let generatedIndex = 0;
+  while (pool.length < 1000 && generatedIndex < 10_000) {
+    const batchSize = Math.max(200, (1000 - pool.length) * 2);
+    pool = uniqueQuestions([...pool, ...generatedQuestions(subject, generatedIndex, batchSize)]);
+    generatedIndex += batchSize;
+  }
+  return pool.slice(0, 1000);
 }
 
 function level55Ordered(items: PracticeQuestion[], seedText: string) {
   const difficultyWeight: Record<string, number> = {
-    陜難ｽｺ驕峨・: 0,
-    隶灘綜・ｺ繝ｻ: 1,
-    陷茨ｽ･髫ｧ・ｦ陜難ｽｺ驕峨・: 2,
+    基本: 0,
+    標準: 1,
+    入試基礎: 2,
   };
   return seededShuffle(uniqueQuestions(items), seedText)
     .map((question, index) => ({
@@ -196,14 +207,16 @@ export async function GET(request: Request) {
       .filter(Boolean),
   );
 
+  const deliveryTimes = new Map<string, string>();
   if (user && mode !== "focus") {
     await ensureStudyRecordTables(runtime.DB);
-    const { results = [] } = await runtime.DB.prepare(`SELECT question_id, question_key
+    const { results = [] } = await runtime.DB.prepare(`SELECT question_id, question_key, last_delivered_at
       FROM question_deliveries
-      WHERE student_id = ?`).bind(user.id).all<{ question_id: string; question_key: string }>();
+      WHERE student_id = ?`).bind(user.id).all<{ question_id: string; question_key: string; last_delivered_at: string }>();
     for (const delivered of results) {
       excludeIds.add(String(delivered.question_id));
       excludeKeys.add(String(delivered.question_key));
+      deliveryTimes.set(String(delivered.question_key), String(delivered.last_delivered_at ?? ""));
     }
   }
 
@@ -219,6 +232,13 @@ export async function GET(request: Request) {
 
   const start = user && mode !== "focus" ? 0 : (set - 1) * count;
   const returnedQuestions = filteredSource.slice(start, start + count);
+  if (user && mode !== "focus" && returnedQuestions.length < count) {
+    const selectedKeys = new Set(returnedQuestions.map(questionKey));
+    const oldestDelivered = source
+      .filter((question) => !selectedKeys.has(questionKey(question)))
+      .sort((left, right) => (deliveryTimes.get(questionKey(left)) ?? "").localeCompare(deliveryTimes.get(questionKey(right)) ?? ""));
+    returnedQuestions.push(...oldestDelivered.slice(0, count - returnedQuestions.length));
+  }
 
   if (user && mode !== "focus" && returnedQuestions.length > 0) {
     await recordQuestionDeliveries(runtime.DB, user.id, returnedQuestions.map((question) => ({
@@ -235,7 +255,8 @@ export async function GET(request: Request) {
     round,
     count,
     totalQuestions: returnedQuestions.length,
-    totalSets: Math.max(1, Math.ceil(filteredSource.length / count)),
+    totalSets: Math.max(1, Math.ceil(source.length / count)),
+    poolSize: source.length,
     availableQuestions: filteredSource.length,
     complete: returnedQuestions.length === count,
     questions: returnedQuestions,

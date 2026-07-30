@@ -35,6 +35,7 @@ type TodayAwayStats = {
   jukuAwayCount: number;
   awayStartedAt?: number | null;
   awayAtJuku?: boolean;
+  stateUpdatedAtMs?: number;
 };
 
 type SubjectProgressMap = Record<Exclude<StudySubject, "理社ミックス">, number>;
@@ -528,16 +529,23 @@ export default function Home() {
   const [weeklyMessage, setWeeklyMessage] = useState("");
   const [statsDetail, setStatsDetail] = useState<"focus" | "solved" | null>(null);
   const timerSessionActive = timerMode === "countdown" ? running : stopwatchRunning;
-  const sessionActive = timerSessionActive
+  const sessionActive = !studentLocked && (timerSessionActive
     || (view === "practice" && practicePhase === "questions")
-    || (view === "weekly-test" && weeklyStarted && weeklyTest?.kind === "active");
+    || (view === "weekly-test" && weeklyStarted && weeklyTest?.kind === "active"));
+  const jukuModeActive = stopwatchRunning && freeStudyAction === "juku";
   const sessionActiveRef = useRef(sessionActive);
   const presenceSessionIdRef = useRef<string | null>(null);
   const presenceStartedAtRef = useRef(0);
   const presenceActiveSecondsRef = useRef(0);
+  const presenceLastTickAtRef = useRef(Date.now());
   const awayStartedAtRef = useRef<number | null>(null);
   const lastStudyActionAtRef = useRef(Date.now());
   const idleActiveRef = useRef(false);
+  const focusLastTickAtRef = useRef(Date.now());
+  const countdownEndsAtRef = useRef<number | null>(null);
+  const stopwatchStartedAtRef = useRef<number | null>(null);
+  const stopwatchBaseSecondsRef = useRef(0);
+  const stopwatchSecondsRef = useRef(0);
   const weeklyAwayStartedAtRef = useRef<number | null>(null);
   const weeklySubmittingRef = useRef(false);
   const awayStatsRef = useRef<TodayAwayStats>({
@@ -572,6 +580,26 @@ export default function Home() {
       body: payload,
       keepalive: true,
     }).catch(() => undefined);
+  };
+
+  const finishAwayPeriod = () => {
+    const startedAt = awayStartedAtRef.current;
+    if (startedAt === null) return;
+    const elapsed = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
+    const atJuku = Boolean(awayStatsRef.current.awayAtJuku);
+    const nextAway: TodayAwayStats = {
+      ...awayStatsRef.current,
+      awaySeconds: awayStatsRef.current.awaySeconds + (atJuku ? 0 : elapsed),
+      jukuAwaySeconds: awayStatsRef.current.jukuAwaySeconds + (atJuku ? elapsed : 0),
+      awayStartedAt: null,
+      awayAtJuku: false,
+      stateUpdatedAtMs: Date.now(),
+    };
+    awayStatsRef.current = nextAway;
+    awayStartedAtRef.current = null;
+    setAwaySeconds(nextAway.awaySeconds);
+    setJukuAwaySeconds(nextAway.jukuAwaySeconds);
+    persistAwayStats(nextAway);
   };
 
   const loadWeeklyTest = async () => {
@@ -664,41 +692,66 @@ export default function Home() {
   }, [authUser, view, weeklyStarted, weeklyTest]);
 
   useEffect(() => {
-    if (seconds <= 0) {
-      setRunning(false);
+    if (!running) {
+      countdownEndsAtRef.current = null;
       return;
     }
-    if (!running) return;
-    const timer = window.setInterval(() => setSeconds((current) => current - 1), 1000);
+    countdownEndsAtRef.current = Date.now() + Math.max(0, seconds) * 1000;
+    const tick = () => {
+      const remaining = Math.max(0, Math.ceil(((countdownEndsAtRef.current ?? Date.now()) - Date.now()) / 1000));
+      setSeconds(remaining);
+      if (remaining === 0) setRunning(false);
+    };
+    tick();
+    const timer = window.setInterval(tick, 250);
     return () => window.clearInterval(timer);
-  }, [running, seconds]);
+  }, [running]);
 
   useEffect(() => {
-    if (!stopwatchRunning) return;
-    const stopwatch = window.setInterval(() => setStopwatchSeconds((current) => current + 1), 1000);
-    return () => window.clearInterval(stopwatch);
+    stopwatchSecondsRef.current = stopwatchSeconds;
+  }, [stopwatchSeconds]);
+
+  useEffect(() => {
+    if (!stopwatchRunning) {
+      stopwatchStartedAtRef.current = null;
+      stopwatchBaseSecondsRef.current = stopwatchSecondsRef.current;
+      return;
+    }
+    stopwatchBaseSecondsRef.current = stopwatchSecondsRef.current;
+    stopwatchStartedAtRef.current = Date.now();
+    const tick = () => {
+      const elapsed = Math.floor((Date.now() - (stopwatchStartedAtRef.current ?? Date.now())) / 1000);
+      const next = stopwatchBaseSecondsRef.current + Math.max(0, elapsed);
+      stopwatchSecondsRef.current = next;
+      setStopwatchSeconds(next);
+    };
+    tick();
+    const stopwatch = window.setInterval(tick, 250);
+    return () => {
+      tick();
+      window.clearInterval(stopwatch);
+    };
   }, [stopwatchRunning]);
 
   useEffect(() => {
     sessionActiveRef.current = sessionActive;
-    if (!sessionActive && awayStartedAtRef.current !== null) {
-      const elapsed = Math.max(1, Math.round((Date.now() - awayStartedAtRef.current) / 1000));
-      if (freeStudyAction === "juku") {
-        setJukuAwaySeconds((current) => current + elapsed);
-      } else {
-        setAwaySeconds((current) => current + elapsed);
-      }
-      awayStartedAtRef.current = null;
-    }
-  }, [sessionActive, freeStudyAction]);
+    if (!sessionActive) finishAwayPeriod();
+  }, [sessionActive]);
 
   useEffect(() => {
     if (!sessionActive) return;
+    focusLastTickAtRef.current = Date.now();
     const focusCounter = window.setInterval(() => {
-      if (awayStartedAtRef.current === null && !idleActiveRef.current) setTrackedFocusSeconds((current) => current + 1);
-    }, 1000);
+      const now = Date.now();
+      const elapsed = Math.floor((now - focusLastTickAtRef.current) / 1000);
+      if (elapsed < 1) return;
+      focusLastTickAtRef.current += elapsed * 1000;
+      if (!document.hidden && awayStartedAtRef.current === null && !idleActiveRef.current && !jukuModeActive) {
+        setTrackedFocusSeconds((current) => current + elapsed);
+      }
+    }, 250);
     return () => window.clearInterval(focusCounter);
-  }, [sessionActive]);
+  }, [jukuModeActive, sessionActive]);
 
   useEffect(() => {
     const markStudyAction = () => {
@@ -721,59 +774,61 @@ export default function Home() {
   }, [sessionActive]);
 
   useEffect(() => {
-    if (!sessionActive || freeStudyAction === "juku") return;
+    if (!sessionActive || jukuModeActive) return;
     const idleTimer = window.setInterval(() => {
       if (awayStartedAtRef.current !== null) return;
       const inactiveSeconds = Math.floor((Date.now() - lastStudyActionAtRef.current) / 1000);
       if (inactiveSeconds < IDLE_WARNING_SECONDS) return;
       if (!idleActiveRef.current) {
         idleActiveRef.current = true;
-        setIdleCount((current) => current + 1);
+        setTrackedFocusSeconds((current) => Math.max(0, current - IDLE_WARNING_SECONDS));
+        setIdleCount((current) => {
+          const next = current + 1;
+          awayStatsRef.current = { ...awayStatsRef.current, idleCount: Math.max(awayStatsRef.current.idleCount, next) };
+          return next;
+        });
+        setIdleSeconds((current) => {
+          const next = current + IDLE_WARNING_SECONDS;
+          awayStatsRef.current = { ...awayStatsRef.current, idleSeconds: Math.max(awayStatsRef.current.idleSeconds, next) };
+          return next;
+        });
       }
-      setIdleSeconds((current) => current + 1);
+      setIdleSeconds((current) => {
+        const next = current + 1;
+        awayStatsRef.current = { ...awayStatsRef.current, idleSeconds: Math.max(awayStatsRef.current.idleSeconds, next) };
+        return next;
+      });
     }, 1000);
     return () => window.clearInterval(idleTimer);
-  }, [sessionActive, freeStudyAction]);
+  }, [jukuModeActive, sessionActive]);
 
   useEffect(() => {
     const startAway = () => {
       if (!sessionActiveRef.current || awayStartedAtRef.current !== null) return;
       awayStartedAtRef.current = Date.now();
       const current = awayStatsRef.current;
-      const nextAway: TodayAwayStats = freeStudyAction === "juku"
-        ? { ...current, jukuAwayCount: current.jukuAwayCount + 1, awayStartedAt: awayStartedAtRef.current, awayAtJuku: true }
-        : { ...current, awayCount: current.awayCount + 1, awayStartedAt: awayStartedAtRef.current, awayAtJuku: false };
+      const nextAway: TodayAwayStats = jukuModeActive
+        ? { ...current, jukuAwayCount: current.jukuAwayCount + 1, awayStartedAt: awayStartedAtRef.current, awayAtJuku: true, stateUpdatedAtMs: Date.now() }
+        : { ...current, awayCount: current.awayCount + 1, awayStartedAt: awayStartedAtRef.current, awayAtJuku: false, stateUpdatedAtMs: Date.now() };
       awayStatsRef.current = nextAway;
       persistAwayStats(nextAway, true);
-      if (freeStudyAction === "juku") {
-        setJukuAwayCount((current) => current + 1);
+      if (jukuModeActive) {
+        setJukuAwayCount(nextAway.jukuAwayCount);
       } else {
-        setAwayCount((current) => current + 1);
+        setAwayCount(nextAway.awayCount);
       }
     };
-    const finishAway = () => {
-      if (awayStartedAtRef.current === null) return;
-      const elapsed = Math.max(1, Math.round((Date.now() - awayStartedAtRef.current) / 1000));
-      if (freeStudyAction === "juku") {
-        setJukuAwaySeconds((current) => current + elapsed);
-      } else {
-        setAwaySeconds((current) => current + elapsed);
-      }
-      awayStatsRef.current = { ...awayStatsRef.current, awayStartedAt: null, awayAtJuku: false };
-      persistAwayStats(awayStatsRef.current);
-      awayStartedAtRef.current = null;
-    };
-    const handleVisibilityChange = () => document.hidden ? startAway() : finishAway();
+    const handleVisibilityChange = () => document.hidden ? startAway() : finishAwayPeriod();
 
     document.addEventListener("visibilitychange", handleVisibilityChange);
     window.addEventListener("pagehide", startAway);
-    window.addEventListener("pageshow", finishAway);
+    window.addEventListener("pageshow", finishAwayPeriod);
     return () => {
       document.removeEventListener("visibilitychange", handleVisibilityChange);
       window.removeEventListener("pagehide", startAway);
-      window.removeEventListener("pageshow", finishAway);
+      window.removeEventListener("pageshow", finishAwayPeriod);
     };
-  }, [authUser, freeStudyAction, sessionActive]);
+  }, [authUser, jukuModeActive, sessionActive]);
 
   useEffect(() => {
     const messageTimer = window.setInterval(() => setDailyMessageDate(getJstDateKey()), 60_000);
@@ -1037,6 +1092,7 @@ export default function Home() {
           jukuAwayCount: Math.max(0, Number(data.away.jukuAwayCount ?? 0)),
           awayStartedAt: typeof data.away.awayStartedAt === "number" ? data.away.awayStartedAt : null,
           awayAtJuku: Boolean(data.away.awayAtJuku),
+          stateUpdatedAtMs: Math.max(0, Number(data.away.stateUpdatedAtMs ?? 0)),
         };
         const mergedAway: TodayAwayStats = {
           date: remoteAway.date,
@@ -1048,7 +1104,12 @@ export default function Home() {
           jukuAwayCount: Math.max(awayStatsRef.current.jukuAwayCount, remoteAway.jukuAwayCount),
           awayStartedAt: Math.max(Number(awayStatsRef.current.awayStartedAt ?? 0), Number(remoteAway.awayStartedAt ?? 0)) || null,
           awayAtJuku: Number(remoteAway.awayStartedAt ?? 0) >= Number(awayStatsRef.current.awayStartedAt ?? 0) ? remoteAway.awayAtJuku : awayStatsRef.current.awayAtJuku,
+          stateUpdatedAtMs: Math.max(Number(awayStatsRef.current.stateUpdatedAtMs ?? 0), Number(remoteAway.stateUpdatedAtMs ?? 0)),
         };
+        if (data?.summary && typeof data.summary === "object") {
+          const remoteFocusSeconds = Math.max(0, Number(data.summary.focusSeconds ?? 0));
+          setBaseTodayFocusSeconds((current) => Math.max(current, remoteFocusSeconds));
+        }
         if (mergedAway.awayStartedAt) {
           const elapsed = Math.max(1, Math.round((Date.now() - mergedAway.awayStartedAt) / 1000));
           if (mergedAway.awayAtJuku) mergedAway.jukuAwaySeconds += elapsed;
@@ -1175,12 +1236,17 @@ export default function Home() {
       setPresenceActiveSeconds(0);
     }
 
+    presenceLastTickAtRef.current = Date.now();
     sendPresence(document.hidden ? "away" : "studying");
     const secondTimer = window.setInterval(() => {
-      if (document.hidden) return;
-      presenceActiveSecondsRef.current += 1;
+      const now = Date.now();
+      const elapsed = Math.floor((now - presenceLastTickAtRef.current) / 1000);
+      if (elapsed < 1) return;
+      presenceLastTickAtRef.current += elapsed * 1000;
+      if (document.hidden || awayStartedAtRef.current !== null || idleActiveRef.current || jukuModeActive) return;
+      presenceActiveSecondsRef.current += elapsed;
       setPresenceActiveSeconds(presenceActiveSecondsRef.current);
-    }, 1000);
+    }, 250);
     const heartbeatTimer = window.setInterval(() => sendPresence(document.hidden ? "away" : "studying"), 15_000);
     const handleVisibility = () => sendPresence(document.hidden ? "away" : "studying", document.hidden);
     const handlePageHide = () => sendPresence("away", true);
@@ -1194,7 +1260,7 @@ export default function Home() {
       window.removeEventListener("pagehide", handlePageHide);
       window.removeEventListener("pageshow", handleVisibility);
     };
-  }, [authUser, sessionActive]);
+  }, [authUser, jukuModeActive, sessionActive]);
 
   useEffect(() => {
     if (!authUser) return;
@@ -1239,6 +1305,7 @@ export default function Home() {
       jukuAwayCount,
       awayStartedAt: awayStatsRef.current.awayStartedAt ?? null,
       awayAtJuku: awayStatsRef.current.awayAtJuku ?? false,
+      stateUpdatedAtMs: awayStatsRef.current.stateUpdatedAtMs ?? 0,
     };
     awayStatsRef.current = nextAway;
     try {
@@ -1317,6 +1384,7 @@ export default function Home() {
       jukuAwayCount,
       awayStartedAt: awayStatsRef.current.awayStartedAt ?? null,
       awayAtJuku: awayStatsRef.current.awayAtJuku ?? false,
+      stateUpdatedAtMs: awayStatsRef.current.stateUpdatedAtMs ?? 0,
     },
   }), [awayCount, awaySeconds, idleCount, idleSeconds, jukuAwayCount, jukuAwaySeconds, reportFocusSeconds, todayCorrect, todayTotal, todayWrong]);
   const guardianSummaryRef = useRef(guardianSummary);
@@ -1590,6 +1658,9 @@ export default function Home() {
   const resetFreeStopwatch = () => {
     setStopwatchRunning(false);
     setStopwatchSeconds(0);
+    stopwatchSecondsRef.current = 0;
+    stopwatchBaseSecondsRef.current = 0;
+    stopwatchStartedAtRef.current = null;
     setFreeStudyResult("");
     resetAwayTracking();
   };

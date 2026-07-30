@@ -22,6 +22,7 @@ export type DailyAwayInput = {
   jukuAwayCount: number;
   awayStartedAt?: number | null;
   awayAtJuku?: boolean;
+  stateUpdatedAtMs?: number;
 };
 
 export async function ensureGuardianReportTables(db: D1Database) {
@@ -59,6 +60,7 @@ export async function ensureGuardianReportTables(db: D1Database) {
       juku_away_count INTEGER NOT NULL DEFAULT 0,
       away_started_at INTEGER,
       away_at_juku INTEGER NOT NULL DEFAULT 0,
+      state_updated_at_ms INTEGER NOT NULL DEFAULT 0,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       PRIMARY KEY(student_id, summary_date)
     )`),
@@ -72,6 +74,11 @@ export async function ensureGuardianReportTables(db: D1Database) {
       UNIQUE(student_id, summary_date)
     )`),
   ]);
+  try {
+    await db.prepare("ALTER TABLE daily_away_stats ADD COLUMN state_updated_at_ms INTEGER NOT NULL DEFAULT 0").run();
+  } catch {
+    // The column already exists on new or previously migrated databases.
+  }
 }
 
 export function jstDateKey(timestamp = Date.now(), dayOffset = 0) {

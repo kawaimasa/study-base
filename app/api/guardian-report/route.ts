@@ -1,6 +1,8 @@
 import { env } from "cloudflare:workers";
 import { ensureGuardianReportTables, jstDateKey, type DailyAwayInput, type DailySummaryInput } from "../../../lib/guardian-reports";
 import { getAuthenticatedDeviceUser } from "../../../lib/device-auth";
+import { studentDailyFocusSeconds } from "../../../lib/study-presence";
+import { studentRecordSnapshot } from "../../../lib/study-records";
 
 type GuardianEnv = {
   DB: D1Database;
@@ -13,9 +15,17 @@ export async function GET(request: Request) {
   if (!user) return Response.json({ error: "login required" }, { status: 401 });
   const profile = await runtime.DB.prepare("SELECT notifications_enabled FROM guardian_profiles WHERE student_id = ?")
     .bind(user.id).first<{ notifications_enabled: number }>();
-  const away = await runtime.DB.prepare(`SELECT away_seconds, away_count, idle_seconds, idle_count, juku_away_seconds, juku_away_count, away_started_at, away_at_juku
+  const away = await runtime.DB.prepare(`SELECT away_seconds, away_count, idle_seconds, idle_count, juku_away_seconds, juku_away_count, away_started_at, away_at_juku, state_updated_at_ms
     FROM daily_away_stats WHERE student_id = ? AND summary_date = ?`)
     .bind(user.id, jstDateKey()).first<Record<string, number>>();
+  const today = jstDateKey();
+  const [savedSummary, sessionFocus, records] = await Promise.all([
+    runtime.DB.prepare(`SELECT focus_seconds, away_seconds, questions_solved, correct_answers, wrong_answers
+      FROM daily_summaries WHERE student_id = ? AND summary_date = ?`)
+      .bind(user.id, today).first<Record<string, number>>(),
+    studentDailyFocusSeconds(runtime.DB, user.id, today),
+    studentRecordSnapshot(runtime.DB, user.id),
+  ]);
   return Response.json({
     profile: profile ? { enabled: Boolean(profile.notifications_enabled) } : null,
     away: away ? {
@@ -27,7 +37,16 @@ export async function GET(request: Request) {
       jukuAwayCount: Number(away.juku_away_count ?? 0),
       awayStartedAt: away.away_started_at ? Number(away.away_started_at) : null,
       awayAtJuku: Boolean(away.away_at_juku),
+      stateUpdatedAtMs: Number(away.state_updated_at_ms ?? 0),
     } : null,
+    summary: {
+      summaryDate: today,
+      focusSeconds: Math.max(Number(savedSummary?.focus_seconds ?? 0), sessionFocus),
+      awaySeconds: Number(savedSummary?.away_seconds ?? 0),
+      questionsSolved: Math.max(Number(savedSummary?.questions_solved ?? 0), records.solved),
+      correctAnswers: Math.max(Number(savedSummary?.correct_answers ?? 0), records.correct),
+      wrongAnswers: Math.max(Number(savedSummary?.wrong_answers ?? 0), records.wrong),
+    },
   });
 }
 
@@ -41,14 +60,15 @@ function normalizeAway(value: DailyAwayInput): DailyAwayInput {
     jukuAwayCount: Math.max(0, Math.floor(Number(value.jukuAwayCount) || 0)),
     awayStartedAt: Number.isFinite(Number(value.awayStartedAt)) && Number(value.awayStartedAt) > 0 ? Math.floor(Number(value.awayStartedAt)) : null,
     awayAtJuku: Boolean(value.awayAtJuku),
+    stateUpdatedAtMs: Math.max(0, Math.floor(Number(value.stateUpdatedAtMs) || 0)),
   };
 }
 
 async function saveAwayStats(db: D1Database, studentId: string, summaryDate: string, input: DailyAwayInput) {
   const away = normalizeAway(input);
   await db.prepare(`INSERT INTO daily_away_stats
-    (student_id, summary_date, away_seconds, away_count, idle_seconds, idle_count, juku_away_seconds, juku_away_count, away_started_at, away_at_juku, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    (student_id, summary_date, away_seconds, away_count, idle_seconds, idle_count, juku_away_seconds, juku_away_count, away_started_at, away_at_juku, state_updated_at_ms, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
     ON CONFLICT(student_id, summary_date) DO UPDATE SET
       away_seconds = MAX(daily_away_stats.away_seconds, excluded.away_seconds),
       away_count = MAX(daily_away_stats.away_count, excluded.away_count),
@@ -56,20 +76,26 @@ async function saveAwayStats(db: D1Database, studentId: string, summaryDate: str
       idle_count = MAX(daily_away_stats.idle_count, excluded.idle_count),
       juku_away_seconds = MAX(daily_away_stats.juku_away_seconds, excluded.juku_away_seconds),
       juku_away_count = MAX(daily_away_stats.juku_away_count, excluded.juku_away_count),
-      away_started_at = excluded.away_started_at,
-      away_at_juku = excluded.away_at_juku,
+      away_started_at = CASE WHEN excluded.state_updated_at_ms >= daily_away_stats.state_updated_at_ms THEN excluded.away_started_at ELSE daily_away_stats.away_started_at END,
+      away_at_juku = CASE WHEN excluded.state_updated_at_ms >= daily_away_stats.state_updated_at_ms THEN excluded.away_at_juku ELSE daily_away_stats.away_at_juku END,
+      state_updated_at_ms = MAX(daily_away_stats.state_updated_at_ms, excluded.state_updated_at_ms),
       updated_at = CURRENT_TIMESTAMP`)
-    .bind(studentId, summaryDate, away.awaySeconds, away.awayCount, away.idleSeconds, away.idleCount, away.jukuAwaySeconds, away.jukuAwayCount, away.awayStartedAt, away.awayAtJuku ? 1 : 0)
+    .bind(studentId, summaryDate, away.awaySeconds, away.awayCount, away.idleSeconds, away.idleCount, away.jukuAwaySeconds, away.jukuAwayCount, away.awayStartedAt, away.awayAtJuku ? 1 : 0, away.stateUpdatedAtMs ?? 0)
     .run();
 }
 
 export async function POST(request: Request) {
-  const payload = await request.json() as {
+  let payload: {
     action?: "settings" | "summary" | "away";
     summaryDate?: string;
     summary?: DailySummaryInput;
     away?: DailyAwayInput;
   };
+  try {
+    payload = await request.json() as typeof payload;
+  } catch {
+    return Response.json({ error: "invalid JSON" }, { status: 400 });
+  }
   const runtime = env as unknown as GuardianEnv;
   await ensureGuardianReportTables(runtime.DB);
   const user = await getAuthenticatedDeviceUser(request, runtime.DB);
@@ -92,17 +118,23 @@ export async function POST(request: Request) {
 
   if (payload.action === "summary" && payload.summary) {
     const summary = payload.summary;
+    const sessionFocus = await studentDailyFocusSeconds(runtime.DB, studentId, summaryDate);
+    const records = summaryDate === jstDateKey() ? await studentRecordSnapshot(runtime.DB, studentId) : null;
+    const focusSeconds = Math.max(0, Number(summary.focusSeconds) || 0, sessionFocus);
+    const questionsSolved = Math.max(0, Number(summary.questionsSolved) || 0, Number(records?.solved ?? 0));
+    const correctAnswers = Math.max(0, Number(summary.correctAnswers) || 0, Number(records?.correct ?? 0));
+    const wrongAnswers = Math.max(0, Number(summary.wrongAnswers) || 0, Number(records?.wrong ?? 0));
     await runtime.DB.prepare(`INSERT INTO daily_summaries
       (student_id, summary_date, focus_seconds, away_seconds, questions_solved, correct_answers, wrong_answers, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
       ON CONFLICT(student_id, summary_date) DO UPDATE SET
-        focus_seconds = excluded.focus_seconds,
-        away_seconds = excluded.away_seconds,
-        questions_solved = excluded.questions_solved,
-        correct_answers = excluded.correct_answers,
-        wrong_answers = excluded.wrong_answers,
+        focus_seconds = MAX(daily_summaries.focus_seconds, excluded.focus_seconds),
+        away_seconds = MAX(daily_summaries.away_seconds, excluded.away_seconds),
+        questions_solved = MAX(daily_summaries.questions_solved, excluded.questions_solved),
+        correct_answers = MAX(daily_summaries.correct_answers, excluded.correct_answers),
+        wrong_answers = MAX(daily_summaries.wrong_answers, excluded.wrong_answers),
         updated_at = CURRENT_TIMESTAMP`)
-      .bind(studentId, summaryDate, Math.max(0, summary.focusSeconds), Math.max(0, summary.awaySeconds), Math.max(0, summary.questionsSolved), Math.max(0, summary.correctAnswers), Math.max(0, summary.wrongAnswers))
+      .bind(studentId, summaryDate, focusSeconds, Math.max(0, Number(summary.awaySeconds) || 0), questionsSolved, correctAnswers, wrongAnswers)
       .run();
     return Response.json({ saved: true, summaryDate });
   }

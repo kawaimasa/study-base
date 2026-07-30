@@ -24,6 +24,22 @@ export const dailySummaries = sqliteTable("daily_summaries", {
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 }, (table) => [uniqueIndex("daily_summaries_student_date_idx").on(table.studentId, table.summaryDate)]);
 
+/** Durable daily leave/idle counters, including a separate juku leave bucket. */
+export const dailyAwayStats = sqliteTable("daily_away_stats", {
+  studentId: text("student_id").notNull(),
+  summaryDate: text("summary_date").notNull(),
+  awaySeconds: integer("away_seconds").notNull().default(0),
+  awayCount: integer("away_count").notNull().default(0),
+  idleSeconds: integer("idle_seconds").notNull().default(0),
+  idleCount: integer("idle_count").notNull().default(0),
+  jukuAwaySeconds: integer("juku_away_seconds").notNull().default(0),
+  jukuAwayCount: integer("juku_away_count").notNull().default(0),
+  awayStartedAt: integer("away_started_at"),
+  awayAtJuku: integer("away_at_juku", { mode: "boolean" }).notNull().default(false),
+  stateUpdatedAtMs: integer("state_updated_at_ms").notNull().default(0),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [uniqueIndex("daily_away_stats_student_date_idx").on(table.studentId, table.summaryDate)]);
+
 /** One durable row for each student and JST calendar day they signed in. */
 export const studentLoginDays = sqliteTable("student_login_days", {
   studentId: text("student_id").notNull(),
@@ -44,6 +60,24 @@ export const studyPresence = sqliteTable("study_presence", {
   lastSeenAtMs: integer("last_seen_at_ms").notNull().default(0),
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 }, (table) => [index("study_presence_status_seen_idx").on(table.status, table.lastSeenAtMs)]);
+
+/** Durable per-session totals. Juku sessions stay visible but do not count as verified focus time. */
+export const studySessionTotals = sqliteTable("study_session_totals", {
+  studentId: text("student_id").notNull(),
+  sessionId: text("session_id").notNull(),
+  summaryDate: text("summary_date").notNull(),
+  status: text("status").notNull().default("stopped"),
+  mode: text("mode").notNull().default("study"),
+  subject: text("subject").notNull().default(""),
+  isJuku: integer("is_juku", { mode: "boolean" }).notNull().default(false),
+  activeSeconds: integer("active_seconds").notNull().default(0),
+  startedAtMs: integer("started_at_ms").notNull().default(0),
+  lastSeenAtMs: integer("last_seen_at_ms").notNull().default(0),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("study_session_totals_student_session_idx").on(table.studentId, table.sessionId),
+  index("study_session_totals_student_date_idx").on(table.studentId, table.summaryDate, table.isJuku),
+]);
 
 /** Questions that have been shown to a student. This prevents accidental repeats. */
 export const questionDeliveries = sqliteTable("question_deliveries", {

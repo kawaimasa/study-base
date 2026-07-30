@@ -90,3 +90,25 @@ test("every practice subject keeps a 20-question duplicate-free supply", async (
   assert.match(route, /poolSize: source\.length/);
   assert.match(route, /complete: returnedQuestions\.length === count/);
 });
+
+test("focus, leave and juku time survive navigation without inflating verified study", async () => {
+  const [page, guardianRoute, presenceHelper, guardianHelper] = await Promise.all([
+    readFile(new URL("app/page.tsx", root), "utf8"),
+    readFile(new URL("app/api/guardian-report/route.ts", root), "utf8"),
+    readFile(new URL("lib/study-presence.ts", root), "utf8"),
+    readFile(new URL("lib/guardian-reports.ts", root), "utf8"),
+  ]);
+
+  assert.match(page, /const jukuModeActive = stopwatchRunning && freeStudyAction === "juku"/);
+  assert.match(page, /!jukuModeActive/);
+  assert.match(page, /finishAwayPeriod/);
+  assert.match(page, /stateUpdatedAtMs: Date\.now\(\)/);
+  assert.match(page, /Math\.floor\(\(now - focusLastTickAtRef\.current\) \/ 1000\)/);
+  assert.match(presenceHelper, /study_session_totals/);
+  assert.match(presenceHelper, /presence\.mode === "塾"/);
+  assert.match(presenceHelper, /is_juku = 0/);
+  assert.match(guardianRoute, /studentDailyFocusSeconds/);
+  assert.match(guardianRoute, /MAX\(daily_summaries\.focus_seconds, excluded\.focus_seconds\)/);
+  assert.match(guardianRoute, /state_updated_at_ms >= daily_away_stats\.state_updated_at_ms/);
+  assert.match(guardianHelper, /state_updated_at_ms INTEGER NOT NULL DEFAULT 0/);
+});

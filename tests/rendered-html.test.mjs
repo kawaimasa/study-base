@@ -19,6 +19,10 @@ test("live study roster uses registered students and durable presence", async ()
   assert.match(page, /navigator\.sendBeacon\("\/api\/study-presence"/);
   assert.match(matesRoute, /LEFT JOIN study_presence/);
   assert.match(matesRoute, /studied_today/);
+  assert.match(matesRoute, /FROM device_users u/);
+  assert.match(matesRoute, /study_session_totals/);
+  assert.match(matesRoute, /practice_attempts/);
+  assert.doesNotMatch(matesRoute, /LIMIT 6\b/);
   assert.match(presenceRoute, /saveStudyPresence/);
   assert.match(presenceHelper, /CREATE TABLE IF NOT EXISTS study_presence/);
   assert.match(presenceHelper, /MAX\(study_presence\.active_seconds, excluded\.active_seconds\)/);
@@ -56,8 +60,11 @@ test("ranking is calculated from durable student records", async () => {
   assert.doesNotMatch(page, /昨日より 1 UP/);
   assert.match(page, /\/api\/rankings\?period=/);
   assert.match(page, /myRanking\?\.rank/);
-  assert.match(rankingsRoute, /SUM\(focus_seconds\)/);
-  assert.match(rankingsRoute, /SUM\(questions_solved\)/);
+  assert.match(rankingsRoute, /SUM\(MAX\(COALESCE\(s\.focus_seconds/);
+  assert.match(rankingsRoute, /SUM\(MAX\(COALESCE\(s\.questions_solved/);
+  assert.match(rankingsRoute, /study_session_totals/);
+  assert.match(rankingsRoute, /practice_attempts/);
+  assert.match(rankingsRoute, /FROM device_users u/);
   assert.match(rankingsRoute, /student_login_days/);
   assert.match(rankingsRoute, /score === previousScore \? previousRank : index \+ 1/);
 });

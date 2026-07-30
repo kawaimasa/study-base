@@ -1421,8 +1421,7 @@ export default function Home() {
     return registeredStudyMates.map((student, index) => {
       const isLocallyStudying = student.isMe && sessionActive;
       const status = isLocallyStudying ? "studying" : student.status;
-      const activeSeconds = isLocallyStudying ? presenceActiveSeconds : student.activeSeconds;
-      const minutes = Math.floor(Math.max(0, status === "studying" || status === "away" ? activeSeconds : student.focusSeconds) / 60);
+      const minutes = Math.floor(Math.max(0, student.focusSeconds) / 60);
       const hasStudyTime = minutes > 0 || student.questionsSolved > 0;
       const activity = isLocallyStudying
         ? view === "practice"
@@ -1448,7 +1447,7 @@ export default function Home() {
         status,
       };
     });
-  }, [freeStudyAction, presenceActiveSeconds, registeredStudyMates, selectedSubject, sessionActive, timerMode, view]);
+  }, [freeStudyAction, registeredStudyMates, selectedSubject, sessionActive, timerMode, view]);
   const studyingMateCount = studyMateRows.filter((mate) => mate.status === "studying").length;
 
   const rankingEntries = useMemo(() => {

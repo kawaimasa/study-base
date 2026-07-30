@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { ensureDeviceAuthTables, getAuthenticatedDeviceUser, type DeviceAuthEnv } from "../../../lib/device-auth";
 import { ensureGuardianReportTables, jstDateKey } from "../../../lib/guardian-reports";
 import { ensureStudyPresenceTable } from "../../../lib/study-presence";
+import { ensureStudyRecordTables } from "../../../lib/study-records";
 
 export async function GET(request: Request) {
   const runtime = env as unknown as DeviceAuthEnv;
@@ -10,35 +11,27 @@ export async function GET(request: Request) {
   await ensureDeviceAuthTables(runtime.DB);
   await ensureGuardianReportTables(runtime.DB);
   await ensureStudyPresenceTable(runtime.DB);
+  await ensureStudyRecordTables(runtime.DB);
 
   const today = jstDateKey();
   const liveAfterMs = Date.now() - 90_000;
-  const { results = [] } = await runtime.DB.prepare(`WITH roster AS (
-      SELECT
-        g.student_id AS id,
-        g.student_name AS display_name,
-        g.created_at AS created_at,
-        g.pairing_code AS pairing_code,
-        g.notifications_enabled AS notifications_enabled
-      FROM guardian_profiles g
-      UNION ALL
-      SELECT
-        u.id AS id,
-        u.display_name AS display_name,
-        u.created_at AS created_at,
-        NULL AS pairing_code,
-        0 AS notifications_enabled
-      FROM device_users u
-      WHERE NOT EXISTS (
-        SELECT 1 FROM guardian_profiles g WHERE g.student_id = u.id
-      )
+  const { results = [] } = await runtime.DB.prepare(`WITH session_focus AS (
+      SELECT student_id, COALESCE(SUM(active_seconds), 0) AS focus_seconds
+      FROM study_session_totals
+      WHERE summary_date = ? AND is_juku = 0
+      GROUP BY student_id
+    ), attempts AS (
+      SELECT student_id, COUNT(*) AS questions_solved
+      FROM practice_attempts
+      WHERE date(attempted_at, '+9 hours') = ?
+      GROUP BY student_id
     )
     SELECT
-      roster.id,
-      roster.display_name,
-      roster.created_at,
-      COALESCE(s.focus_seconds, 0) AS focus_seconds,
-      COALESCE(s.questions_solved, 0) AS questions_solved,
+      u.id,
+      u.display_name,
+      u.created_at,
+      MAX(COALESCE(s.focus_seconds, 0), COALESCE(sf.focus_seconds, 0)) AS focus_seconds,
+      MAX(COALESCE(s.questions_solved, 0), COALESCE(a.questions_solved, 0)) AS questions_solved,
       p.status AS presence_status,
       p.mode AS presence_mode,
       p.subject AS presence_subject,
@@ -46,19 +39,22 @@ export async function GET(request: Request) {
       p.started_at_ms AS presence_started_at_ms,
       p.active_seconds AS presence_active_seconds,
       p.last_seen_at_ms AS presence_last_seen_at_ms
-    FROM roster
-    LEFT JOIN daily_summaries s ON s.student_id = roster.id AND s.summary_date = ?
-    LEFT JOIN study_presence p ON p.student_id = roster.id
+    FROM device_users u
+    LEFT JOIN daily_summaries s ON s.student_id = u.id AND s.summary_date = ?
+    LEFT JOIN session_focus sf ON sf.student_id = u.id
+    LEFT JOIN attempts a ON a.student_id = u.id
+    LEFT JOIN study_presence p ON p.student_id = u.id
     ORDER BY
       CASE WHEN p.status = 'studying' AND p.last_seen_at_ms >= ? THEN 0
            WHEN p.status = 'away' AND p.last_seen_at_ms >= ? THEN 1
-           WHEN COALESCE(s.focus_seconds, 0) > 0 OR COALESCE(s.questions_solved, 0) > 0 THEN 2
+           WHEN MAX(COALESCE(s.focus_seconds, 0), COALESCE(sf.focus_seconds, 0)) > 0
+             OR MAX(COALESCE(s.questions_solved, 0), COALESCE(a.questions_solved, 0)) > 0 THEN 2
            ELSE 3 END,
-      CASE WHEN roster.id = ? THEN 0 ELSE 1 END,
-      COALESCE(s.focus_seconds, 0) DESC,
-      roster.created_at DESC
-    LIMIT 6`)
-    .bind(today, liveAfterMs, liveAfterMs, user.id)
+      CASE WHEN u.id = ? THEN 0 ELSE 1 END,
+      MAX(COALESCE(s.focus_seconds, 0), COALESCE(sf.focus_seconds, 0)) DESC,
+      u.created_at DESC
+    LIMIT 100`)
+    .bind(today, today, today, liveAfterMs, liveAfterMs, user.id)
     .all<Record<string, unknown>>();
 
   return Response.json({

@@ -2,6 +2,8 @@ import { env } from "cloudflare:workers";
 import { getAuthenticatedAdmin } from "../../../lib/admin-auth";
 import { ensureDeviceAuthTables, type DeviceAuthEnv } from "../../../lib/device-auth";
 import { ensureGuardianReportTables, jstDateKey } from "../../../lib/guardian-reports";
+import { ensureStudyPresenceTable } from "../../../lib/study-presence";
+import { ensureStudyRecordTables } from "../../../lib/study-records";
 
 function makePairingCode() {
   return `SB-${crypto.randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase()}`;
@@ -13,48 +15,39 @@ export async function GET(request: Request) {
   if (!admin) return Response.json({ error: "admin login required" }, { status: 401 });
   await ensureDeviceAuthTables(runtime.DB);
   await ensureGuardianReportTables(runtime.DB);
+  await ensureStudyPresenceTable(runtime.DB);
+  await ensureStudyRecordTables(runtime.DB);
   const today = jstDateKey();
-  const totals = await runtime.DB.prepare(`SELECT
-      (SELECT COUNT(*) FROM guardian_profiles) AS student_count,
-      COALESCE(SUM(focus_seconds), 0) AS focus_seconds,
-      COALESCE(SUM(questions_solved), 0) AS questions_solved,
-      COALESCE(SUM(correct_answers), 0) AS correct_answers
-    FROM daily_summaries WHERE summary_date = ?`).bind(today).first<Record<string, number>>();
-  const { results = [] } = await runtime.DB.prepare(`WITH roster AS (
-      SELECT
-        g.student_id AS id,
-        g.student_name AS display_name,
-        g.created_at AS created_at,
-        g.parent_line_user_id AS parent_line_user_id,
-        g.pairing_code AS pairing_code,
-        g.notifications_enabled AS notifications_enabled
-      FROM guardian_profiles g
-      UNION ALL
-      SELECT
-        u.id AS id,
-        u.display_name AS display_name,
-        u.created_at AS created_at,
-        NULL AS parent_line_user_id,
-        NULL AS pairing_code,
-        0 AS notifications_enabled
-      FROM device_users u
-      WHERE NOT EXISTS (
-        SELECT 1 FROM guardian_profiles g WHERE g.student_id = u.id
-      )
+  const { results = [] } = await runtime.DB.prepare(`WITH session_focus AS (
+      SELECT student_id, COALESCE(SUM(active_seconds), 0) AS focus_seconds
+      FROM study_session_totals WHERE summary_date = ? AND is_juku = 0 GROUP BY student_id
+    ), attempts AS (
+      SELECT student_id, COUNT(*) AS questions_solved,
+        COALESCE(SUM(CASE WHEN result = 'correct' THEN 1 ELSE 0 END), 0) AS correct_answers
+      FROM practice_attempts WHERE date(attempted_at, '+9 hours') = ? GROUP BY student_id
     )
     SELECT
-      roster.id,
-      roster.display_name,
-      roster.created_at,
-      COALESCE(s.focus_seconds, 0) AS focus_seconds,
-      COALESCE(s.questions_solved, 0) AS questions_solved,
-      COALESCE(s.correct_answers, 0) AS correct_answers,
-      CASE WHEN roster.parent_line_user_id IS NOT NULL THEN 1 ELSE 0 END AS guardian_connected,
-      roster.pairing_code,
-      COALESCE(roster.notifications_enabled, 0) AS notifications_enabled
-    FROM roster
-    LEFT JOIN daily_summaries s ON s.student_id = roster.id AND s.summary_date = ?
-    ORDER BY roster.created_at DESC LIMIT 100`).bind(today).all<Record<string, unknown>>();
+      u.id,
+      u.display_name,
+      u.created_at,
+      MAX(COALESCE(s.focus_seconds, 0), COALESCE(sf.focus_seconds, 0)) AS focus_seconds,
+      MAX(COALESCE(s.questions_solved, 0), COALESCE(a.questions_solved, 0)) AS questions_solved,
+      MAX(COALESCE(s.correct_answers, 0), COALESCE(a.correct_answers, 0)) AS correct_answers,
+      CASE WHEN g.parent_line_user_id IS NOT NULL THEN 1 ELSE 0 END AS guardian_connected,
+      g.pairing_code,
+      COALESCE(g.notifications_enabled, 0) AS notifications_enabled
+    FROM device_users u
+    LEFT JOIN guardian_profiles g ON g.student_id = u.id
+    LEFT JOIN daily_summaries s ON s.student_id = u.id AND s.summary_date = ?
+    LEFT JOIN session_focus sf ON sf.student_id = u.id
+    LEFT JOIN attempts a ON a.student_id = u.id
+    ORDER BY u.created_at DESC LIMIT 100`).bind(today, today, today).all<Record<string, unknown>>();
+  const totals = results.reduce((sum, row) => ({
+    student_count: sum.student_count + 1,
+    focus_seconds: sum.focus_seconds + Number(row.focus_seconds ?? 0),
+    questions_solved: sum.questions_solved + Number(row.questions_solved ?? 0),
+    correct_answers: sum.correct_answers + Number(row.correct_answers ?? 0),
+  }), { student_count: 0, focus_seconds: 0, questions_solved: 0, correct_answers: 0 });
   return Response.json({
     today,
     admin,

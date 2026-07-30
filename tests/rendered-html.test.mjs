@@ -37,6 +37,15 @@ test("practice and timer activity contribute to the same live session", async ()
   );
 });
 
+test("practice start stays open until a complete 20-question set loads", async () => {
+  const page = await readFile(new URL("app/page.tsx", root), "utf8");
+  assert.match(page, /const seenIds = authUser \? \[\] : readSeenQuestionIds/);
+  assert.match(page, /data\.questions\.length !== QUESTIONS_PER_SET/);
+  assert.match(page, /setPracticeStartError\("問題を読み込めませんでした/);
+  assert.match(page, /setTimerPromptSubject\(null\);\s*changeView\("practice"\)/);
+  assert.doesNotMatch(page, /setTimerPromptSubject\(null\); void startSubjectPractice/);
+});
+
 test("ranking is calculated from durable student records", async () => {
   const [page, rankingsRoute] = await Promise.all([
     readFile(new URL("app/page.tsx", root), "utf8"),

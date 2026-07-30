@@ -485,6 +485,7 @@ export default function Home() {
   const [subjectPickerOpen, setSubjectPickerOpen] = useState(false);
   const [timerPromptSubject, setTimerPromptSubject] = useState<StudySubject | null>(null);
   const [timerPromptMinutes, setTimerPromptMinutes] = useState(PRACTICE_TIMER_DEFAULT_MINUTES);
+  const [practiceStartError, setPracticeStartError] = useState("");
   const [subjectTimerEnabled, setSubjectTimerEnabled] = useState(false);
   const [timerMode, setTimerMode] = useState<"countdown" | "stopwatch">("countdown");
   const [stopwatchSeconds, setStopwatchSeconds] = useState(0);
@@ -1616,6 +1617,7 @@ export default function Home() {
   };
 
   const askSubjectTimer = (subject: StudySubject) => {
+    setPracticeStartError("");
     setTimerPromptMinutes(Math.min(PRACTICE_TIMER_MAX_MINUTES, challengeMinutes));
     setSubjectPickerOpen(false);
     setTimerPromptSubject(subject);
@@ -1647,8 +1649,10 @@ export default function Home() {
   };
 
   const loadNextPracticeSet = async (subject: StudySubject, targetSet: number, round: number) => {
-    const seenIds = authUser ? readSeenQuestionIds(authUser.id, subject) : [];
-    const seenKeys = authUser ? readSeenQuestionKeys(authUser.id, subject) : [];
+    // Signed-in learners are excluded by D1 in the API. Sending the complete
+    // local history in the URL eventually exceeds Cloudflare's URL limit.
+    const seenIds = authUser ? [] : readSeenQuestionIds("anonymous", subject);
+    const seenKeys = authUser ? [] : readSeenQuestionKeys("anonymous", subject);
     const data = await fetchPracticeSet(subject, targetSet, round, seenIds, seenKeys);
     appendSeenQuestionIds(authUser?.id ?? null, subject, data.questions);
     if (authUser) setSeenQuestionIds((current) => ({ ...current, [subject]: [...(current[subject] ?? []), ...data.questions.map((question) => question.id)] }));
@@ -1656,9 +1660,11 @@ export default function Home() {
   };
 
   const startSubjectPractice = async (subject: StudySubject, timerMinutes: number | null) => {
+    setPracticeStartError("");
     setLoadingSubject(subject);
     try {
       const data = await loadNextPracticeSet(subject, 1, 1);
+      if (data.questions.length !== QUESTIONS_PER_SET) throw new Error("incomplete question set");
       setSelectedSubject(subject);
       setQuestionSequence(data.questions);
       setPracticeTotalSets(data.totalSets);
@@ -1679,7 +1685,10 @@ export default function Home() {
         setSubjectTimerEnabled(false);
         setRunning(false);
       }
+      setTimerPromptSubject(null);
       changeView("practice");
+    } catch {
+      setPracticeStartError("問題を読み込めませんでした。通信を確認して、もう一度押してください。");
     } finally {
       setLoadingSubject(null);
     }
@@ -2207,8 +2216,9 @@ export default function Home() {
             {PRACTICE_TIMER_OPTIONS.map((minutes) => <button key={minutes} className={timerPromptMinutes === minutes ? "active" : ""} onClick={() => setTimerPromptMinutes(minutes)} aria-pressed={timerPromptMinutes === minutes}>{minutes}<small>分</small></button>)}
           </div>
           <label className="timer-prompt-custom"><span>自分で決める</span><input type="number" min="1" max={PRACTICE_TIMER_MAX_MINUTES} value={timerPromptMinutes} onChange={(event) => setTimerPromptMinutes(Math.max(1, Math.min(PRACTICE_TIMER_MAX_MINUTES, Number(event.target.value) || 1)))} /><small>分</small></label>
-          <button className="primary-button timer-prompt-start" autoFocus onClick={() => { const subject = timerPromptSubject; setTimerPromptSubject(null); void startSubjectPractice(subject, timerPromptMinutes); }}>タイマーをセットして始める　▶</button>
-          <button className="timer-prompt-skip" onClick={() => { const subject = timerPromptSubject; setTimerPromptSubject(null); void startSubjectPractice(subject, null); }}>今回はタイマーなしで始める</button>
+          {practiceStartError && <p className="auth-error" role="alert">{practiceStartError}</p>}
+          <button className="primary-button timer-prompt-start" autoFocus disabled={Boolean(loadingSubject)} onClick={() => void startSubjectPractice(timerPromptSubject, timerPromptMinutes)}>{loadingSubject ? "20問を準備中…" : "タイマーをセットして始める　▶"}</button>
+          <button className="timer-prompt-skip" disabled={Boolean(loadingSubject)} onClick={() => void startSubjectPractice(timerPromptSubject, null)}>今回はタイマーなしで始める</button>
         </section>
       </div>}
 

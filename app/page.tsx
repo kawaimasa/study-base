@@ -486,6 +486,10 @@ export default function Home() {
   const [timerPromptSubject, setTimerPromptSubject] = useState<StudySubject | null>(null);
   const [timerPromptMinutes, setTimerPromptMinutes] = useState(PRACTICE_TIMER_DEFAULT_MINUTES);
   const [practiceStartError, setPracticeStartError] = useState("");
+  const [practiceBatchId, setPracticeBatchId] = useState("");
+  const [practiceSaving, setPracticeSaving] = useState(false);
+  const [singleAttemptSaving, setSingleAttemptSaving] = useState(false);
+  const [practiceSaveError, setPracticeSaveError] = useState("");
   const [subjectTimerEnabled, setSubjectTimerEnabled] = useState(false);
   const [timerMode, setTimerMode] = useState<"countdown" | "stopwatch">("countdown");
   const [stopwatchSeconds, setStopwatchSeconds] = useState(0);
@@ -945,6 +949,55 @@ export default function Home() {
     } finally {
       setAwayStatsLoaded(true);
     }
+  }, [authUser]);
+
+  useEffect(() => {
+    if (!authUser) return;
+    let cancelled = false;
+    void fetch("/api/study-records", { cache: "no-store" })
+      .then(async (response) => {
+        if (!response.ok) throw new Error("study records unavailable");
+        return response.json() as Promise<{
+          today: string;
+          loginDays: number;
+          solved: number;
+          correct: number;
+          mistakes: Array<{ question?: Record<string, unknown> }>;
+        }>;
+      })
+      .then((data) => {
+        if (cancelled) return;
+        setLoginDaysCount(Math.max(1, Number(data.loginDays ?? 0)));
+        const serverScore: TodayScore = {
+          date: data.today,
+          correct: Math.max(0, Number(data.correct ?? 0)),
+          total: Math.max(0, Number(data.solved ?? 0)),
+        };
+        setTodayScore((current) => {
+          const next = current.date === serverScore.date && current.total > serverScore.total ? current : serverScore;
+          try {
+            window.localStorage.setItem(userStorageKey(TODAY_SCORE_STORAGE_KEY, authUser.id), JSON.stringify(next));
+          } catch {
+            // D1 remains the source of truth if browser storage is unavailable.
+          }
+          return next;
+        });
+        const remoteQuestions = (Array.isArray(data.mistakes) ? data.mistakes : [])
+          .map((item) => item.question as unknown as Question)
+          .filter((question) => typeof question?.id === "string");
+        setReviewQueue((current) => {
+          const remoteIds = new Set(remoteQuestions.map((question) => question.id));
+          const next = [...remoteQuestions, ...current.filter((question) => !remoteIds.has(question.id))].slice(0, 50);
+          try {
+            window.localStorage.setItem(userStorageKey(REVIEW_QUEUE_STORAGE_KEY, authUser.id), JSON.stringify(next));
+          } catch {
+            // D1 remains the source of truth if browser storage is unavailable.
+          }
+          return next;
+        });
+      })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
   }, [authUser]);
 
   useEffect(() => {
@@ -1671,6 +1724,8 @@ export default function Home() {
       setSetNumber(1);
       setShuffleRound(1);
       setPracticePhase("questions");
+      setPracticeBatchId(crypto.randomUUID());
+      setPracticeSaveError("");
       setGrades(Array(QUESTIONS_PER_SET).fill(null));
       setStopwatchRunning(false);
       resetAwayTracking();
@@ -1705,22 +1760,51 @@ export default function Home() {
       const nextRound = setNumber >= totalSets ? shuffleRound + 1 : shuffleRound;
       const nextSet = setNumber >= totalSets ? 1 : setNumber + 1;
       const data = await loadNextPracticeSet(selectedSubject, nextSet, nextRound);
+      if (data.questions.length !== QUESTIONS_PER_SET) throw new Error("incomplete question set");
       setQuestionSequence(data.questions);
       setPracticeTotalSets(data.totalSets);
       setSetNumber(nextSet);
       setShuffleRound(nextRound);
+      setPracticeBatchId(crypto.randomUUID());
+      setPracticeSaveError("");
+      setPracticePhase("questions");
+      setGrades(Array(QUESTIONS_PER_SET).fill(null));
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    } catch {
+      setPracticeSaveError("次の20問を準備できませんでした。もう一度押してください。");
     } finally {
       setLoadingSubject(null);
     }
-    setPracticePhase("questions");
-    setGrades(Array(QUESTIONS_PER_SET).fill(null));
-    window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
-  const completePractice = () => {
-    if (gradedCount !== activeQuestions.length) return;
+  const completePractice = async () => {
+    if (!authUser || gradedCount !== QUESTIONS_PER_SET || activeQuestions.length !== QUESTIONS_PER_SET) return;
+    const batchId = practiceBatchId || crypto.randomUUID();
+    if (!practiceBatchId) setPracticeBatchId(batchId);
+    setPracticeSaving(true);
+    setPracticeSaveError("");
+    try {
+      const response = await fetch("/api/study-records", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "attempt-batch",
+          batchId,
+          attempts: activeQuestions.map((question, index) => ({
+            question: {
+              id: question.id,
+              key: questionKey(question),
+              subject: question.subject,
+              payload: question,
+            },
+            result: grades[index],
+            source: "practice",
+          })),
+        }),
+      });
+      if (!response.ok) throw new Error("practice save failed");
 
-    setReviewQueue((current) => {
+      setReviewQueue((current) => {
       const missedQuestions = activeQuestions.filter((_, index) => grades[index] === "wrong");
       const missedIds = new Set(missedQuestions.map((question) => question.id));
       const correctIds = new Set(activeQuestions.filter((_, index) => grades[index] === "correct").map((question) => question.id));
@@ -1736,9 +1820,9 @@ export default function Home() {
       }
 
       return nextQueue;
-    });
+      });
 
-    setTodayScore((current) => {
+      setTodayScore((current) => {
       const today = getLocalDateKey();
       const base = current.date === today ? current : { date: today, correct: 0, total: 0 };
       const nextScore = {
@@ -1754,14 +1838,51 @@ export default function Home() {
       }
 
       return nextScore;
-    });
-    addSubjectProgress(activeQuestions);
-    setPracticePhase("complete");
-    window.scrollTo({ top: 0, behavior: "smooth" });
+      });
+      addSubjectProgress(activeQuestions);
+      setPracticePhase("complete");
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    } catch {
+      setPracticeSaveError("採点結果を保存できませんでした。通信を確認して、もう一度押してください。");
+    } finally {
+      setPracticeSaving(false);
+    }
   };
 
-  const gradeFocusQuestion = (result: "correct" | "wrong") => {
-    if (!focusQuestion) return;
+  const saveSingleAttempt = async (question: Question, result: "correct" | "wrong", source: string) => {
+    if (!authUser) throw new Error("login required");
+    const response = await fetch("/api/study-records", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "attempt-batch",
+        batchId: crypto.randomUUID(),
+        attempts: [{
+          question: {
+            id: question.id,
+            key: questionKey(question),
+            subject: question.subject,
+            payload: question,
+          },
+          result,
+          source,
+        }],
+      }),
+    });
+    if (!response.ok) throw new Error("attempt save failed");
+  };
+
+  const gradeFocusQuestion = async (result: "correct" | "wrong") => {
+    if (!focusQuestion || singleAttemptSaving) return;
+    setSingleAttemptSaving(true);
+    setMistakeMessage("");
+    try {
+      await saveSingleAttempt(focusQuestion, result, focusIsReview ? "focus-review" : "focus");
+    } catch {
+      setMistakeMessage("結果を保存できませんでした。通信を確認して、もう一度押してください。");
+      setSingleAttemptSaving(false);
+      return;
+    }
 
     if (focusIsReview) {
       setReviewQueue((current) => {
@@ -1780,9 +1901,20 @@ export default function Home() {
 
     setFocusAnswerVisible(false);
     addSubjectProgress([focusQuestion]);
+    setSingleAttemptSaving(false);
   };
 
-  const saveMistakeReview = (question: Question, result: "mastered" | "again") => {
+  const saveMistakeReview = async (question: Question, result: "mastered" | "again") => {
+    if (singleAttemptSaving) return;
+    setSingleAttemptSaving(true);
+    setMistakeMessage("");
+    try {
+      await saveSingleAttempt(question, result === "mastered" ? "correct" : "wrong", "mistake-review");
+    } catch {
+      setMistakeMessage("復習結果を保存できませんでした。通信を確認して、もう一度押してください。");
+      setSingleAttemptSaving(false);
+      return;
+    }
     setReviewQueue((current) => {
       const remaining = current.filter((item) => item.id !== question.id);
       const nextQueue = result === "again" ? [...remaining, question].slice(0, 50) : remaining;
@@ -1799,6 +1931,7 @@ export default function Home() {
       return next;
     });
     setMistakeMessage(result === "mastered" ? "1問を克服済みにしました。いい復習！" : "復習リストの最後に戻しました。もう一度挑戦しよう。 ");
+    setSingleAttemptSaving(false);
   };
 
   const submitAuth = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -1968,8 +2101,8 @@ export default function Home() {
                     <strong>{focusQuestion?.answer}</strong>
                     <p>{focusQuestion?.explanation}</p>
                     <div className="focus-grade">
-                      <button className="wrong" onClick={() => gradeFocusQuestion("wrong")}>× まだ</button>
-                      <button className="correct" onClick={() => gradeFocusQuestion("correct")}>○ できた</button>
+                      <button className="wrong" disabled={singleAttemptSaving} onClick={() => void gradeFocusQuestion("wrong")}>× まだ</button>
+                      <button className="correct" disabled={singleAttemptSaving} onClick={() => void gradeFocusQuestion("correct")}>○ できた</button>
                     </div>
                   </div>
                 )}
@@ -2035,7 +2168,7 @@ export default function Home() {
                   </article>
                 ))}
               </div>
-              <div className="set-action final-action"><p>{gradedCount < 20 ? `あと${20 - gradedCount}問を判定してください。` : "20問すべて採点できました。"}</p><button className="primary-button big" disabled={gradedCount < 20} onClick={completePractice}>採点を完了して結果を見る</button></div>
+              <div className="set-action final-action"><p>{practiceSaveError || (gradedCount < 20 ? `あと${20 - gradedCount}問を判定してください。` : "20問すべて採点できました。")}</p><button className="primary-button big" disabled={gradedCount < 20 || practiceSaving} onClick={() => void completePractice()}>{practiceSaving ? "採点結果を保存中…" : "採点を完了して結果を見る"}</button></div>
             </>}
             {practicePhase === "complete" && <article className="completion-card">
               <span className="completion-mark">✓</span>
@@ -2043,7 +2176,8 @@ export default function Home() {
               <h2>20問、おつかれさま！</h2>
               <p>今日の積み重ねが、ちゃんと合格力になっています。</p>
               <div className="completion-score"><div><strong>{correctCount}</strong><span>正解</span></div><div><strong>{wrongCount}</strong><span>復習へ</span></div><div><strong>{Math.round((correctCount / 20) * 100)}%</strong><span>正答率</span></div></div>
-              <button className="primary-button big" onClick={startNextSet}>{setNumber >= totalSets ? "ランダムに並べ替えて SET 001へ ↻" : `次の20問へ　SET ${String(setNumber + 1).padStart(3, "0")} →`}</button>
+              {practiceSaveError && <p className="auth-error" role="alert">{practiceSaveError}</p>}
+              <button className="primary-button big" disabled={Boolean(loadingSubject)} onClick={() => void startNextSet()}>{loadingSubject ? "次の20問を準備中…" : setNumber >= totalSets ? "ランダムに並べ替えて SET 001へ ↻" : `次の20問へ　SET ${String(setNumber + 1).padStart(3, "0")} →`}</button>
             </article>}
           </section>
         )}
@@ -2072,7 +2206,7 @@ export default function Home() {
                     <button className="mistake-reveal" aria-expanded="false" onClick={() => setRevealedMistakeIds((current) => new Set(current).add(question.id))}>もう一度解いて、答えを見る →</button>
                   </> : <>
                     <div className="mistake-answer"><span>ANSWER</span><strong>{question.answer}</strong><p>{question.explanation}</p></div>
-                    <div className="mistake-grade"><span>今回はどうだった？</span><button className="mistake-again" onClick={() => saveMistakeReview(question, "again")}>× まだ復習する</button><button className="mistake-mastered" onClick={() => saveMistakeReview(question, "mastered")}>✓ 克服できた</button></div>
+                    <div className="mistake-grade"><span>今回はどうだった？</span><button className="mistake-again" disabled={singleAttemptSaving} onClick={() => void saveMistakeReview(question, "again")}>× まだ復習する</button><button className="mistake-mastered" disabled={singleAttemptSaving} onClick={() => void saveMistakeReview(question, "mastered")}>✓ 克服できた</button></div>
                   </>}
                 </article>;
               })}

@@ -61,3 +61,21 @@ test("ranking is calculated from durable student records", async () => {
   assert.match(rankingsRoute, /student_login_days/);
   assert.match(rankingsRoute, /score === previousScore \? previousRank : index \+ 1/);
 });
+
+test("practice grading and mistake reviews are persisted idempotently in D1", async () => {
+  const [page, recordsRoute, recordsHelper, schema] = await Promise.all([
+    readFile(new URL("app/page.tsx", root), "utf8"),
+    readFile(new URL("app/api/study-records/route.ts", root), "utf8"),
+    readFile(new URL("lib/study-records.ts", root), "utf8"),
+    readFile(new URL("db/schema.ts", root), "utf8"),
+  ]);
+
+  assert.match(page, /action: "attempt-batch"/);
+  assert.match(page, /fetch\("\/api\/study-records", \{ cache: "no-store" \}\)/);
+  assert.match(page, /source: "practice"/);
+  assert.match(page, /"mistake-review"/);
+  assert.match(recordsRoute, /recordPracticeAttemptBatch/);
+  assert.match(recordsHelper, /practice_attempt_batches/);
+  assert.match(recordsHelper, /date\(attempted_at, '\+9 hours'\)/);
+  assert.match(schema, /practiceAttemptBatches/);
+});

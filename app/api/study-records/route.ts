@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { getAuthenticatedDeviceUser, type DeviceAuthEnv } from "../../../lib/device-auth";
 import {
   recordPracticeAttempt,
+  recordPracticeAttemptBatch,
   recordQuestionDeliveries,
   studentRecordSnapshot,
   type AttemptResult,
@@ -20,6 +21,19 @@ function toQuestion(value: unknown): StudyRecordQuestion {
     key,
     subject,
     payload: typeof input.payload === "object" && input.payload !== null ? input.payload as Record<string, unknown> : {},
+  };
+}
+
+function toAttempt(value: unknown) {
+  if (!value || typeof value !== "object") throw new Error("attempt is required");
+  const input = value as Record<string, unknown>;
+  const result = input.result;
+  if (result !== "correct" && result !== "wrong") throw new Error("attempt result must be correct or wrong");
+  return {
+    question: toQuestion(input.question),
+    result,
+    answerText: typeof input.answer === "string" ? input.answer : "",
+    source: typeof input.source === "string" ? input.source.slice(0, 50) : "practice",
   };
 }
 
@@ -54,6 +68,13 @@ export async function POST(request: Request) {
   const payload = await request.json() as Record<string, unknown>;
 
   try {
+    if (payload.action === "attempt-batch") {
+      const batchId = typeof payload.batchId === "string" ? payload.batchId : "";
+      const attempts = Array.isArray(payload.attempts) ? payload.attempts.map(toAttempt) : [];
+      const result = await recordPracticeAttemptBatch(runtime.DB, user.id, batchId, attempts);
+      return Response.json(result);
+    }
+
     if (payload.action === "delivery") {
       const items = Array.isArray(payload.questions) ? payload.questions.map(toQuestion) : [];
       if (items.length < 1 || items.length > 80) return Response.json({ error: "questions must contain 1 to 80 items" }, { status: 400 });

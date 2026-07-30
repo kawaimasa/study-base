@@ -7,6 +7,13 @@ export type StudyRecordQuestion = {
 
 export type AttemptResult = "correct" | "wrong";
 
+export type PracticeAttemptInput = {
+  question: StudyRecordQuestion;
+  result: AttemptResult;
+  answerText?: string;
+  source?: string;
+};
+
 function jstDateKey(timestamp = Date.now()) {
   const date = new Date(timestamp + 9 * 60 * 60 * 1000);
   return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}-${String(date.getUTCDate()).padStart(2, "0")}`;
@@ -49,6 +56,13 @@ export async function ensureStudyRecordTables(db: D1Database) {
     )`),
     db.prepare("CREATE INDEX IF NOT EXISTS practice_attempts_student_question_time_idx ON practice_attempts(student_id, question_id, attempted_at)"),
     db.prepare("CREATE INDEX IF NOT EXISTS practice_attempts_student_date_idx ON practice_attempts(student_id, attempted_at)"),
+    db.prepare(`CREATE TABLE IF NOT EXISTS practice_attempt_batches (
+      batch_id TEXT PRIMARY KEY,
+      student_id TEXT NOT NULL,
+      attempt_count INTEGER NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`),
+    db.prepare("CREATE INDEX IF NOT EXISTS practice_attempt_batches_student_idx ON practice_attempt_batches(student_id, created_at)"),
     db.prepare(`CREATE TABLE IF NOT EXISTS mistake_notes (
       student_id TEXT NOT NULL,
       question_id TEXT NOT NULL,
@@ -138,6 +152,88 @@ export async function recordPracticeAttempt(
   await db.batch(statements);
 }
 
+function buildAttemptStatements(db: D1Database, studentId: string, attempt: PracticeAttemptInput) {
+  const { question, result } = attempt;
+  assertQuestion(question);
+  if (result !== "correct" && result !== "wrong") throw new Error("invalid grading result");
+  const statements = [
+    db.prepare(`INSERT INTO question_deliveries
+      (student_id, question_id, question_key, subject, question_json, delivered_count, first_delivered_at, last_delivered_at)
+      VALUES (?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      ON CONFLICT(student_id, question_key) DO UPDATE SET
+        question_id = excluded.question_id,
+        subject = excluded.subject,
+        question_json = excluded.question_json,
+        delivered_count = question_deliveries.delivered_count + 1,
+        last_delivered_at = CURRENT_TIMESTAMP`)
+      .bind(studentId, question.id, question.key, question.subject, JSON.stringify(question.payload)),
+    db.prepare(`INSERT INTO practice_attempts
+      (student_id, question_id, question_key, subject, answer_text, result, source)
+      VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      .bind(
+        studentId,
+        question.id,
+        question.key,
+        question.subject,
+        String(attempt.answerText ?? "").slice(0, 500),
+        result,
+        String(attempt.source ?? "practice").slice(0, 50),
+      ),
+  ];
+  if (result === "wrong") {
+    statements.push(db.prepare(`INSERT INTO mistake_notes
+      (student_id, question_id, question_key, subject, question_json, status, wrong_count, last_wrong_at, mastered_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, 'active', 1, CURRENT_TIMESTAMP, NULL, CURRENT_TIMESTAMP)
+      ON CONFLICT(student_id, question_id) DO UPDATE SET
+        question_key = excluded.question_key,
+        subject = excluded.subject,
+        question_json = excluded.question_json,
+        status = 'active',
+        wrong_count = mistake_notes.wrong_count + 1,
+        last_wrong_at = CURRENT_TIMESTAMP,
+        mastered_at = NULL,
+        updated_at = CURRENT_TIMESTAMP`)
+      .bind(studentId, question.id, question.key, question.subject, JSON.stringify(question.payload)));
+  } else {
+    statements.push(db.prepare(`UPDATE mistake_notes
+      SET status = 'mastered', mastered_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+      WHERE student_id = ? AND question_id = ? AND status = 'active'`)
+      .bind(studentId, question.id));
+  }
+  return statements;
+}
+
+/** Saves one self-graded set atomically. A stable batch id makes retries safe. */
+export async function recordPracticeAttemptBatch(
+  db: D1Database,
+  studentId: string,
+  batchId: string,
+  attempts: PracticeAttemptInput[],
+) {
+  const normalizedBatchId = batchId.trim().slice(0, 120);
+  if (!normalizedBatchId) throw new Error("batch id is required");
+  if (attempts.length < 1 || attempts.length > 80) throw new Error("attempts must contain 1 to 80 items");
+  await ensureStudyRecordTables(db);
+  const existing = await db.prepare("SELECT batch_id FROM practice_attempt_batches WHERE batch_id = ? AND student_id = ?")
+    .bind(normalizedBatchId, studentId).first();
+  if (existing) return { saved: true, duplicate: true, attempts: attempts.length };
+
+  const statements = [
+    db.prepare("INSERT INTO practice_attempt_batches (batch_id, student_id, attempt_count) VALUES (?, ?, ?)")
+      .bind(normalizedBatchId, studentId, attempts.length),
+  ];
+  for (const attempt of attempts) statements.push(...buildAttemptStatements(db, studentId, attempt));
+  try {
+    await db.batch(statements);
+  } catch (error) {
+    const raced = await db.prepare("SELECT batch_id FROM practice_attempt_batches WHERE batch_id = ? AND student_id = ?")
+      .bind(normalizedBatchId, studentId).first();
+    if (raced) return { saved: true, duplicate: true, attempts: attempts.length };
+    throw error;
+  }
+  return { saved: true, duplicate: false, attempts: attempts.length };
+}
+
 export async function studentRecordSnapshot(db: D1Database, studentId: string) {
   await ensureStudyRecordTables(db);
   const today = jstDateKey();
@@ -145,7 +241,7 @@ export async function studentRecordSnapshot(db: D1Database, studentId: string) {
     db.prepare("SELECT COUNT(*) AS login_days FROM student_login_days WHERE student_id = ?").bind(studentId),
     db.prepare(`SELECT COUNT(*) AS solved, COALESCE(SUM(CASE WHEN result = 'correct' THEN 1 ELSE 0 END), 0) AS correct,
       COALESCE(SUM(CASE WHEN result = 'wrong' THEN 1 ELSE 0 END), 0) AS wrong
-      FROM practice_attempts WHERE student_id = ? AND substr(attempted_at, 1, 10) = ?`).bind(studentId, today),
+      FROM practice_attempts WHERE student_id = ? AND date(attempted_at, '+9 hours') = ?`).bind(studentId, today),
     db.prepare("SELECT COUNT(*) AS active_mistakes FROM mistake_notes WHERE student_id = ? AND status = 'active'").bind(studentId),
     db.prepare("SELECT COUNT(*) AS delivered FROM question_deliveries WHERE student_id = ?").bind(studentId),
   ]);

@@ -76,6 +76,14 @@ export const practiceAttempts = sqliteTable("practice_attempts", {
   index("practice_attempts_student_date_idx").on(table.studentId, table.attemptedAt),
 ]);
 
+/** Idempotency receipt for one self-graded practice set or review action. */
+export const practiceAttemptBatches = sqliteTable("practice_attempt_batches", {
+  batchId: text("batch_id").primaryKey(),
+  studentId: text("student_id").notNull(),
+  attemptCount: integer("attempt_count").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [index("practice_attempt_batches_student_idx").on(table.studentId, table.createdAt)]);
+
 /** The active, student-specific retry queue. A correct retry marks it mastered. */
 export const mistakeNotes = sqliteTable("mistake_notes", {
   studentId: text("student_id").notNull(),

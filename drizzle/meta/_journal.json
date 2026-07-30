@@ -43,6 +43,13 @@
       "when": 1785394425635,
       "tag": "0005_young_lady_mastermind",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1785399575227,
+      "tag": "0006_soft_cyclops",
+      "breakpoints": true
     }
   ]
 }

@@ -100,6 +100,26 @@ test("every practice subject keeps a 20-question duplicate-free supply", async (
   assert.match(route, /complete: returnedQuestions\.length === count/);
 });
 
+test("English bank contains 50 complete sets of genuinely unique questions", async () => {
+  const questions = JSON.parse(await readFile(new URL("public/data/english.json", root), "utf8"));
+  const normalize = (value) => String(value).normalize("NFKC").replace(/\s+/g, " ").trim().toLowerCase();
+  const categories = new Map();
+  for (const question of questions) categories.set(question.category, (categories.get(question.category) ?? 0) + 1);
+
+  assert.equal(questions.length, 1000);
+  assert.equal(new Set(questions.map(({ id }) => id)).size, 1000);
+  assert.equal(new Set(questions.map(({ question }) => normalize(question))).size, 1000);
+  assert.equal(new Set(questions.map(({ batch }) => batch)).size, 50);
+  assert.deepEqual(Object.fromEntries(categories), {
+    "語彙": 200,
+    "文法": 200,
+    "並べ替え": 200,
+    "英作文": 200,
+    "読解": 200,
+  });
+  assert.ok(questions.every(({ id }) => id.startsWith("EN3-")), "new ids must not collide with previously delivered English questions");
+});
+
 test("focus, leave and juku time survive navigation without inflating verified study", async () => {
   const [page, guardianRoute, presenceHelper, guardianHelper] = await Promise.all([
     readFile(new URL("app/page.tsx", root), "utf8"),

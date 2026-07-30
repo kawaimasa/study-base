@@ -133,7 +133,9 @@ const LOGIN_DAYS_STORAGE_KEY = "study-base-login-days";
 const REVIEW_QUEUE_STORAGE_KEY = "study-base-review-queue";
 const FREE_STUDY_SESSIONS_STORAGE_KEY = "study-base-free-study-sessions";
 const PRACTICE_DRAFT_STORAGE_KEY = "study-base-practice-draft";
-const PRACTICE_DRAFT_VERSION = 1;
+// Version 2 invalidates incomplete drafts created by the old duplicated
+// English bank, including the 19-question set that could not be resumed.
+const PRACTICE_DRAFT_VERSION = 2;
 const QUESTIONS_PER_SUBJECT = 1000;
 const QUESTIONS_PER_SET = 20;
 const PRACTICE_TIMER_MAX_MINUTES = 15;

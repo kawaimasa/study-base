@@ -154,7 +154,7 @@ test("practice drafts, active students and protected weekly tests survive real u
   ]);
 
   assert.match(page, /PRACTICE_DRAFT_STORAGE_KEY/);
-  assert.match(page, /PRACTICE_DRAFT_VERSION/);
+  assert.match(page, /PRACTICE_DRAFT_VERSION = 2/);
   assert.match(page, /function writeSeenQuestionKeys/);
   assert.match(page, /function questionKey\(question: Question\)/);
   assert.match(page, /practiceSaveInFlightRef/);

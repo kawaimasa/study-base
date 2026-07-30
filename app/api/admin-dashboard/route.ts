@@ -9,8 +9,13 @@ function makePairingCode() {
   return `SB-${crypto.randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase()}`;
 }
 
+type AdminDashboardEnv = DeviceAuthEnv & {
+  LINE_CHANNEL_SECRET?: string;
+  LINE_CHANNEL_ACCESS_TOKEN?: string;
+};
+
 export async function GET(request: Request) {
-  const runtime = env as unknown as DeviceAuthEnv;
+  const runtime = env as unknown as AdminDashboardEnv;
   const admin = await getAuthenticatedAdmin(request, runtime.DB);
   if (!admin) return Response.json({ error: "admin login required" }, { status: 401 });
   await ensureDeviceAuthTables(runtime.DB);
@@ -54,6 +59,10 @@ export async function GET(request: Request) {
     admin,
     totals,
     students: results,
+    integrations: {
+      lineWebhookConfigured: Boolean(runtime.LINE_CHANNEL_SECRET),
+      linePushConfigured: Boolean(runtime.LINE_CHANNEL_ACCESS_TOKEN),
+    },
   });
 }
 

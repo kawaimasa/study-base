@@ -20,6 +20,7 @@ type Dashboard = {
   today: string;
   totals: { student_count: number; focus_seconds: number; questions_solved: number; correct_answers: number };
   students: StudentRow[];
+  integrations: { lineWebhookConfigured: boolean; linePushConfigured: boolean };
 };
 type WeeklyTestRow = {
   id: string;
@@ -302,6 +303,7 @@ export default function AdminPage() {
         <section className="admin-students">
           <div className="section-heading"><div><p className="eyebrow">GUARDIAN LINE・ADMIN ONLY</p><h2>生徒・保護者LINE管理</h2></div><span>最大100人表示</span></div>
           <div className="admin-guardian-note">
+            <p><strong>LINE接続：</strong><span className={dashboard?.integrations?.lineWebhookConfigured && dashboard?.integrations?.linePushConfigured ? "admin-connected" : "admin-unconnected"}>{dashboard?.integrations?.lineWebhookConfigured && dashboard?.integrations?.linePushConfigured ? "送信準備OK" : "未設定があります"}</span></p>
             <strong>この設定と連携コードは、管理者だけに表示されます。</strong>
             <span>保護者への事前案内が済んだ生徒のみ、朝7時通知をONにしてください。</span>
             {dashboardMessage && <em role="status">{dashboardMessage}</em>}

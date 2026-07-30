@@ -123,13 +123,14 @@ test("focus, leave and juku time survive navigation without inflating verified s
 });
 
 test("practice drafts, active students and protected weekly tests survive real usage", async () => {
-  const [page, deviceRoute, weeklyRoute, lineRoute, adminRoute, guardianHelper] = await Promise.all([
+  const [page, deviceRoute, weeklyRoute, lineRoute, adminRoute, guardianHelper, adminPage] = await Promise.all([
     readFile(new URL("app/page.tsx", root), "utf8"),
     readFile(new URL("app/api/device-auth/route.ts", root), "utf8"),
     readFile(new URL("app/api/weekly-tests/route.ts", root), "utf8"),
     readFile(new URL("app/api/line-webhook/route.ts", root), "utf8"),
     readFile(new URL("app/api/admin-dashboard/route.ts", root), "utf8"),
     readFile(new URL("lib/guardian-reports.ts", root), "utf8"),
+    readFile(new URL("app/admin/page.tsx", root), "utf8"),
   ]);
 
   assert.match(page, /PRACTICE_DRAFT_STORAGE_KEY/);
@@ -147,6 +148,8 @@ test("practice drafts, active students and protected weekly tests survive real u
   assert.match(lineRoute, /pairing_used_at IS NULL/);
   assert.match(lineRoute, /datetime\(pairing_expires_at\) > CURRENT_TIMESTAMP/);
   assert.match(adminRoute, /action === "student-status"/);
+  assert.match(adminRoute, /linePushConfigured: Boolean\(runtime\.LINE_CHANNEL_ACCESS_TOKEN\)/);
+  assert.match(adminPage, /LINE接続/);
   assert.match(guardianHelper, /INNER JOIN device_users u ON u\.id = p\.student_id AND u\.is_active = 1/);
   assert.match(guardianHelper, /ensureStudyPresenceTable\(env\.DB\)/);
   assert.match(guardianHelper, /ensureStudyRecordTables\(env\.DB\)/);

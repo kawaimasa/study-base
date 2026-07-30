@@ -15,24 +15,52 @@ export async function GET(request: Request) {
   await ensureGuardianReportTables(runtime.DB);
   const today = jstDateKey();
   const totals = await runtime.DB.prepare(`SELECT
-      (SELECT COUNT(*) FROM device_users) AS student_count,
+      (SELECT COUNT(*) FROM guardian_profiles) AS student_count,
       COALESCE(SUM(focus_seconds), 0) AS focus_seconds,
       COALESCE(SUM(questions_solved), 0) AS questions_solved,
       COALESCE(SUM(correct_answers), 0) AS correct_answers
     FROM daily_summaries WHERE summary_date = ?`).bind(today).first<Record<string, number>>();
-  const { results = [] } = await runtime.DB.prepare(`SELECT
-      u.id, u.display_name, u.created_at,
+  const { results = [] } = await runtime.DB.prepare(`WITH roster AS (
+      SELECT
+        g.student_id AS id,
+        g.student_name AS display_name,
+        g.created_at AS created_at,
+        g.parent_line_user_id AS parent_line_user_id,
+        g.pairing_code AS pairing_code,
+        g.notifications_enabled AS notifications_enabled
+      FROM guardian_profiles g
+      UNION ALL
+      SELECT
+        u.id AS id,
+        u.display_name AS display_name,
+        u.created_at AS created_at,
+        NULL AS parent_line_user_id,
+        NULL AS pairing_code,
+        0 AS notifications_enabled
+      FROM device_users u
+      WHERE NOT EXISTS (
+        SELECT 1 FROM guardian_profiles g WHERE g.student_id = u.id
+      )
+    )
+    SELECT
+      roster.id,
+      roster.display_name,
+      roster.created_at,
       COALESCE(s.focus_seconds, 0) AS focus_seconds,
       COALESCE(s.questions_solved, 0) AS questions_solved,
       COALESCE(s.correct_answers, 0) AS correct_answers,
-      CASE WHEN g.parent_line_user_id IS NOT NULL THEN 1 ELSE 0 END AS guardian_connected,
-      g.pairing_code,
-      COALESCE(g.notifications_enabled, 0) AS notifications_enabled
-    FROM device_users u
-    LEFT JOIN daily_summaries s ON s.student_id = u.id AND s.summary_date = ?
-    LEFT JOIN guardian_profiles g ON g.student_id = u.id
-    ORDER BY u.created_at DESC LIMIT 100`).bind(today).all<Record<string, unknown>>();
-  return Response.json({ today, admin, totals, students: results });
+      CASE WHEN roster.parent_line_user_id IS NOT NULL THEN 1 ELSE 0 END AS guardian_connected,
+      roster.pairing_code,
+      COALESCE(roster.notifications_enabled, 0) AS notifications_enabled
+    FROM roster
+    LEFT JOIN daily_summaries s ON s.student_id = roster.id AND s.summary_date = ?
+    ORDER BY roster.created_at DESC LIMIT 100`).bind(today).all<Record<string, unknown>>();
+  return Response.json({
+    today,
+    admin,
+    totals,
+    students: results,
+  });
 }
 
 export async function POST(request: Request) {
@@ -48,7 +76,10 @@ export async function POST(request: Request) {
     return Response.json({ error: "studentId and enabled are required" }, { status: 400 });
   }
 
-  const student = await runtime.DB.prepare("SELECT display_name FROM device_users WHERE id = ?")
+  const student = await runtime.DB.prepare(`SELECT COALESCE(g.student_name, u.display_name) AS display_name
+      FROM device_users u
+      LEFT JOIN guardian_profiles g ON g.student_id = u.id
+      WHERE u.id = ?`)
     .bind(studentId).first<{ display_name: string }>();
   if (!student) return Response.json({ error: "student not found" }, { status: 404 });
 

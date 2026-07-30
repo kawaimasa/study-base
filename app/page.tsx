@@ -25,6 +25,18 @@ type TodayFocus = {
   focusSeconds: number;
 };
 
+type TodayAwayStats = {
+  date: string;
+  awaySeconds: number;
+  awayCount: number;
+  idleSeconds: number;
+  idleCount: number;
+  jukuAwaySeconds: number;
+  jukuAwayCount: number;
+  awayStartedAt?: number | null;
+  awayAtJuku?: boolean;
+};
+
 type SubjectProgressMap = Record<Exclude<StudySubject, "理社ミックス">, number>;
 
 type AuthUser = {
@@ -40,6 +52,7 @@ type FreeStudySession = {
   seconds: number;
   awaySeconds: number;
   idleSeconds: number;
+  jukuAwaySeconds: number;
   savedAt: string;
 };
 
@@ -49,7 +62,15 @@ type RegisteredStudyMate = {
   focusSeconds: number;
   questionsSolved: number;
   isMe: boolean;
+  status: "studying" | "away" | "studied_today" | "not_started";
+  mode: string;
+  subject: string;
+  detail: string;
+  startedAtMs: number;
+  activeSeconds: number;
 };
+
+type FreeStudyAction = { key: string; label: string };
 
 function toGivenNameOnly(value: string) {
   const normalized = value.replace(/\s+/g, " ").trim();
@@ -95,6 +116,7 @@ type WeeklyTestData = {
 
 const TODAY_SCORE_STORAGE_KEY = "study-base-today-score";
 const TODAY_FOCUS_STORAGE_KEY = "study-base-today-focus";
+const TODAY_AWAY_STORAGE_KEY = "study-base-today-away";
 const SUBJECT_PROGRESS_STORAGE_KEY = "study-base-subject-progress";
 const LOGIN_DAYS_STORAGE_KEY = "study-base-login-days";
 const REVIEW_QUEUE_STORAGE_KEY = "study-base-review-queue";
@@ -105,7 +127,15 @@ const PRACTICE_TIMER_MAX_MINUTES = 15;
 const PRACTICE_TIMER_DEFAULT_MINUTES = 15;
 const PRACTICE_TIMER_OPTIONS = [5, 10, 15];
 const FOCUS_TIMER_OPTIONS = [15, 30, 60, 90];
-const FREE_STUDY_ACTIONS = ["学校ワーク", "塾教材", "暗記", "ノートまとめ", "過去問", "その他"];
+const FREE_STUDY_ACTIONS: FreeStudyAction[] = [
+  { key: "school-work", label: "学校ワーク" },
+  { key: "juku", label: "塾" },
+  { key: "juku-material", label: "塾教材" },
+  { key: "memorize", label: "暗記" },
+  { key: "notes", label: "ノートまとめ" },
+  { key: "past-exam", label: "過去問" },
+  { key: "other", label: "その他" },
+];
 const IDLE_WARNING_SECONDS = 90;
 const STUDENT_LOCK_START_HOUR = 0;
 const STUDENT_LOCK_END_HOUR = 5;
@@ -218,10 +248,7 @@ function createLevel55Sequence(source: Question[]) {
 }
 
 function getLocalDateKey(date = new Date()) {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
+  return getJstDateKey(date.getTime());
 }
 
 function getJstDateKey(timestamp = Date.now()) {
@@ -244,6 +271,51 @@ function getDailyStreakMessage(dateKey: string) {
 
 function userStorageKey(baseKey: string, userId: string) {
   return `${baseKey}:${userId}`;
+}
+
+function practiceSeenQuestionStorageKey(userId: string, subject: string) {
+  return userStorageKey(`study-base-seen-questions:${subject}`, userId);
+}
+
+function practiceSeenQuestionKeyStorageKey(userId: string, subject: string) {
+  return userStorageKey(`study-base-seen-question-keys:${subject}`, userId);
+}
+
+function normalizeQuestionKey(value: string) {
+  return value
+    .replace(/[\p{P}\p{S}\s]+/gu, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function readSeenQuestionIds(userId: string, subject: string) {
+  try {
+    const raw = window.localStorage.getItem(practiceSeenQuestionStorageKey(userId, subject));
+    if (!raw) return [] as string[];
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === "string") : [];
+  } catch {
+    return [] as string[];
+  }
+}
+
+function readSeenQuestionKeys(userId: string, subject: string) {
+  try {
+    const raw = window.localStorage.getItem(practiceSeenQuestionKeyStorageKey(userId, subject));
+    if (!raw) return [] as string[];
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === "string") : [];
+  } catch {
+    return [] as string[];
+  }
+}
+
+function writeSeenQuestionIds(userId: string, subject: string, ids: Iterable<string>) {
+  try {
+    window.localStorage.setItem(practiceSeenQuestionStorageKey(userId, subject), JSON.stringify([...new Set(ids)]));
+  } catch {
+    // Best-effort only.
+  }
 }
 
 function cleanQuestionText(text: string | undefined) {
@@ -322,23 +394,27 @@ const questions = [
 ];
 
 const leaderboard = [
-  { rank: 1, name: "そら", time: "3h 12m", streak: 21, color: "purple" },
-  { rank: 2, name: "はる", time: "2h 46m", streak: 14, color: "blue", me: true },
-  { rank: 3, name: "みお", time: "2h 31m", streak: 9, color: "coral" },
-  { rank: 4, name: "りく", time: "2h 08m", streak: 18, color: "green" },
-  { rank: 5, name: "ゆい", time: "1h 54m", streak: 7, color: "yellow" },
-];
-
-const liveStudyMates = [
-  { name: "そら", startTime: "19:42", subject: "数学", unit: "一次関数", minutes: 128, color: "purple", tier: "上位ペース", pace: "近畿55＋" },
-  { name: "みお", startTime: "20:18", subject: "英語", unit: "不定詞", minutes: 92, color: "coral", tier: "平均ペース", pace: "近畿55目標" },
-  { name: "りく", startTime: "20:51", subject: "理科", unit: "電流・磁界", minutes: 59, color: "green", tier: "追い上げペース", pace: "基礎固め" },
+  { rank: 1, name: "ハル", time: "2時間32分", streak: 21, color: "purple" },
+  { rank: 2, name: "みお", time: "2時間16分", streak: 14, color: "blue", me: true },
+  { rank: 3, name: "りく", time: "1時間52分", streak: 9, color: "coral" },
+  { rank: 4, name: "なほ", time: "1時間38分", streak: 18, color: "green" },
+  { rank: 5, name: "るい", time: "1時間24分", streak: 7, color: "yellow" },
 ];
 
 function formatStudyTime(minutes: number) {
   const hours = Math.floor(minutes / 60);
   const rest = minutes % 60;
   return hours > 0 ? `${hours}時間${rest}分` : `${rest}分`;
+}
+
+function formatJstStartTime(timestamp: number) {
+  if (!timestamp) return "—";
+  return new Intl.DateTimeFormat("ja-JP", {
+    timeZone: "Asia/Tokyo",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(new Date(timestamp));
 }
 
 function formatClock(totalSeconds: number) {
@@ -358,6 +434,14 @@ function formatAwayTime(totalSeconds: number) {
 
 function Icon({ children }: { children: React.ReactNode }) {
   return <span className="icon-box" aria-hidden="true">{children}</span>;
+}
+
+function appendSeenQuestionIds(userId: string | null, subject: string | null, questions: Question[]) {
+  if (!userId || !subject) return;
+  const existing = readSeenQuestionIds(userId, subject);
+  writeSeenQuestionIds(userId, subject, [...existing, ...questions.map((question) => question.id)]);
+  const existingKeys = readSeenQuestionKeys(userId, subject);
+  writeSeenQuestionKeys(userId, subject, [...existingKeys, ...questions.map((question) => normalizeQuestionKey(question.question))]);
 }
 
 export default function Home() {
@@ -403,7 +487,7 @@ export default function Home() {
   const [timerMode, setTimerMode] = useState<"countdown" | "stopwatch">("countdown");
   const [stopwatchSeconds, setStopwatchSeconds] = useState(0);
   const [stopwatchRunning, setStopwatchRunning] = useState(false);
-  const [freeStudyAction, setFreeStudyAction] = useState(FREE_STUDY_ACTIONS[0]);
+  const [freeStudyAction, setFreeStudyAction] = useState<FreeStudyAction["key"]>(FREE_STUDY_ACTIONS[0].key);
   const [freeStudyPlan, setFreeStudyPlan] = useState("");
   const [freeStudyResult, setFreeStudyResult] = useState("");
   const [freeStudySessions, setFreeStudySessions] = useState<FreeStudySession[]>([]);
@@ -411,13 +495,17 @@ export default function Home() {
   const [awayCount, setAwayCount] = useState(0);
   const [idleSeconds, setIdleSeconds] = useState(0);
   const [idleCount, setIdleCount] = useState(0);
+  const [jukuAwaySeconds, setJukuAwaySeconds] = useState(0);
+  const [jukuAwayCount, setJukuAwayCount] = useState(0);
+  const [awayStatsLoaded, setAwayStatsLoaded] = useState(false);
   const [baseTodayFocusSeconds, setBaseTodayFocusSeconds] = useState(0);
   const [trackedFocusSeconds, setTrackedFocusSeconds] = useState(0);
   const [subjectProgressCounts, setSubjectProgressCounts] = useState<SubjectProgressMap>(defaultSubjectProgress);
   const [guardianEnabled, setGuardianEnabled] = useState(false);
   const [rankPeriod, setRankPeriod] = useState("今日");
-  const [liveMinutes, setLiveMinutes] = useState(() => liveStudyMates.map((mate) => mate.minutes));
   const [registeredStudyMates, setRegisteredStudyMates] = useState<RegisteredStudyMate[]>([]);
+  const [presenceActiveSeconds, setPresenceActiveSeconds] = useState(0);
+  const [seenQuestionIds, setSeenQuestionIds] = useState<Record<string, string[]>>({});
   const [loginDaysCount, setLoginDaysCount] = useState(1);
   const [dailyMessageDate, setDailyMessageDate] = useState(() => getJstDateKey());
   const [studentLocked, setStudentLocked] = useState(() => isStudentLockedByTime());
@@ -430,13 +518,52 @@ export default function Home() {
   const [weeklySubmitting, setWeeklySubmitting] = useState(false);
   const [weeklyMessage, setWeeklyMessage] = useState("");
   const [statsDetail, setStatsDetail] = useState<"focus" | "solved" | null>(null);
-  const sessionActive = timerMode === "countdown" ? running : stopwatchRunning;
+  const timerSessionActive = timerMode === "countdown" ? running : stopwatchRunning;
+  const sessionActive = timerSessionActive
+    || (view === "practice" && practicePhase === "questions")
+    || (view === "weekly-test" && weeklyStarted && weeklyTest?.kind === "active");
   const sessionActiveRef = useRef(sessionActive);
+  const presenceSessionIdRef = useRef<string | null>(null);
+  const presenceStartedAtRef = useRef(0);
+  const presenceActiveSecondsRef = useRef(0);
   const awayStartedAtRef = useRef<number | null>(null);
   const lastStudyActionAtRef = useRef(Date.now());
   const idleActiveRef = useRef(false);
   const weeklyAwayStartedAtRef = useRef<number | null>(null);
   const weeklySubmittingRef = useRef(false);
+  const awayStatsRef = useRef<TodayAwayStats>({
+    date: getLocalDateKey(),
+    awaySeconds: 0,
+    awayCount: 0,
+    idleSeconds: 0,
+    idleCount: 0,
+    jukuAwaySeconds: 0,
+    jukuAwayCount: 0,
+  });
+
+  const persistAwayStats = (stats: TodayAwayStats, useBeacon = false) => {
+    if (!authUser) return;
+    try {
+      window.localStorage.setItem(userStorageKey(TODAY_AWAY_STORAGE_KEY, authUser.id), JSON.stringify(stats));
+    } catch {
+      // The server copy below remains available when browser storage is unavailable.
+    }
+    const payload = JSON.stringify({ action: "away", summaryDate: stats.date, away: stats });
+    if (useBeacon && typeof navigator.sendBeacon === "function") {
+      try {
+        navigator.sendBeacon("/api/guardian-report", new Blob([payload], { type: "application/json" }));
+        return;
+      } catch {
+        // Use fetch as a fallback.
+      }
+    }
+    void fetch("/api/guardian-report", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: payload,
+      keepalive: true,
+    }).catch(() => undefined);
+  };
 
   const loadWeeklyTest = async () => {
     try {
@@ -480,6 +607,7 @@ export default function Home() {
 
   useEffect(() => {
     if (!authUser) return;
+    setAwayStatsLoaded(false);
     try {
       const scopedKey = userStorageKey(LOGIN_DAYS_STORAGE_KEY, authUser.id);
       const savedDays = window.localStorage.getItem(scopedKey) ?? window.localStorage.getItem(LOGIN_DAYS_STORAGE_KEY);
@@ -546,10 +674,14 @@ export default function Home() {
     sessionActiveRef.current = sessionActive;
     if (!sessionActive && awayStartedAtRef.current !== null) {
       const elapsed = Math.max(1, Math.round((Date.now() - awayStartedAtRef.current) / 1000));
-      setAwaySeconds((current) => current + elapsed);
+      if (freeStudyAction === "juku") {
+        setJukuAwaySeconds((current) => current + elapsed);
+      } else {
+        setAwaySeconds((current) => current + elapsed);
+      }
       awayStartedAtRef.current = null;
     }
-  }, [sessionActive]);
+  }, [sessionActive, freeStudyAction]);
 
   useEffect(() => {
     if (!sessionActive) return;
@@ -580,7 +712,7 @@ export default function Home() {
   }, [sessionActive]);
 
   useEffect(() => {
-    if (!sessionActive) return;
+    if (!sessionActive || freeStudyAction === "juku") return;
     const idleTimer = window.setInterval(() => {
       if (awayStartedAtRef.current !== null) return;
       const inactiveSeconds = Math.floor((Date.now() - lastStudyActionAtRef.current) / 1000);
@@ -592,18 +724,34 @@ export default function Home() {
       setIdleSeconds((current) => current + 1);
     }, 1000);
     return () => window.clearInterval(idleTimer);
-  }, [sessionActive]);
+  }, [sessionActive, freeStudyAction]);
 
   useEffect(() => {
     const startAway = () => {
       if (!sessionActiveRef.current || awayStartedAtRef.current !== null) return;
       awayStartedAtRef.current = Date.now();
-      setAwayCount((current) => current + 1);
+      const current = awayStatsRef.current;
+      const nextAway: TodayAwayStats = freeStudyAction === "juku"
+        ? { ...current, jukuAwayCount: current.jukuAwayCount + 1, awayStartedAt: awayStartedAtRef.current, awayAtJuku: true }
+        : { ...current, awayCount: current.awayCount + 1, awayStartedAt: awayStartedAtRef.current, awayAtJuku: false };
+      awayStatsRef.current = nextAway;
+      persistAwayStats(nextAway, true);
+      if (freeStudyAction === "juku") {
+        setJukuAwayCount((current) => current + 1);
+      } else {
+        setAwayCount((current) => current + 1);
+      }
     };
     const finishAway = () => {
       if (awayStartedAtRef.current === null) return;
       const elapsed = Math.max(1, Math.round((Date.now() - awayStartedAtRef.current) / 1000));
-      setAwaySeconds((current) => current + elapsed);
+      if (freeStudyAction === "juku") {
+        setJukuAwaySeconds((current) => current + elapsed);
+      } else {
+        setAwaySeconds((current) => current + elapsed);
+      }
+      awayStatsRef.current = { ...awayStatsRef.current, awayStartedAt: null, awayAtJuku: false };
+      persistAwayStats(awayStatsRef.current);
       awayStartedAtRef.current = null;
     };
     const handleVisibilityChange = () => document.hidden ? startAway() : finishAway();
@@ -616,14 +764,7 @@ export default function Home() {
       window.removeEventListener("pagehide", startAway);
       window.removeEventListener("pageshow", finishAway);
     };
-  }, []);
-
-  useEffect(() => {
-    const liveTimer = window.setInterval(() => {
-      setLiveMinutes((current) => current.map((minutes) => minutes + 1));
-    }, 60_000);
-    return () => window.clearInterval(liveTimer);
-  }, []);
+  }, [authUser, freeStudyAction, sessionActive]);
 
   useEffect(() => {
     const messageTimer = window.setInterval(() => setDailyMessageDate(getJstDateKey()), 60_000);
@@ -670,12 +811,12 @@ export default function Home() {
       const nextMidnight = new Date(now);
       nextMidnight.setHours(24, 0, 0, 0);
       midnightTimer = window.setTimeout(() => {
-        const previousDate = getLocalDateKey(new Date(Date.now() - 1000));
-        const previousSummary = guardianSummaryRef.current;
-        if (guardianEnabled) {
-          void fetch("/api/guardian-report", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
+      const previousDate = getLocalDateKey(new Date(Date.now() - 1000));
+      const { summaryDate: _summaryDate, ...previousSummary } = guardianSummaryRef.current;
+      if (guardianEnabled) {
+        void fetch("/api/guardian-report", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ action: "summary", summaryDate: previousDate, summary: previousSummary }),
           }).catch(() => undefined);
         }
@@ -684,10 +825,37 @@ export default function Home() {
         setTodayScore(emptyScore);
         try { window.localStorage.setItem(userStorageKey(TODAY_SCORE_STORAGE_KEY, authUser.id), JSON.stringify(emptyScore)); } catch { /* Continue without browser storage. */ }
         try { window.localStorage.setItem(userStorageKey(TODAY_FOCUS_STORAGE_KEY, authUser.id), JSON.stringify({ date: getLocalDateKey(), focusSeconds: 0 })); } catch { /* Continue without browser storage. */ }
+        try {
+          window.localStorage.setItem(
+            userStorageKey(TODAY_AWAY_STORAGE_KEY, authUser.id),
+            JSON.stringify({
+              date: getLocalDateKey(),
+              awaySeconds: 0,
+              awayCount: 0,
+              idleSeconds: 0,
+              idleCount: 0,
+              jukuAwaySeconds: 0,
+              jukuAwayCount: 0,
+            }),
+          );
+        } catch { /* Continue without browser storage. */ }
         setBaseTodayFocusSeconds(0);
         setTrackedFocusSeconds(0);
         setAwaySeconds(0);
         setAwayCount(0);
+        setIdleSeconds(0);
+        setIdleCount(0);
+        setJukuAwaySeconds(0);
+        setJukuAwayCount(0);
+        awayStatsRef.current = {
+          date: getLocalDateKey(),
+          awaySeconds: 0,
+          awayCount: 0,
+          idleSeconds: 0,
+          idleCount: 0,
+          jukuAwaySeconds: 0,
+          jukuAwayCount: 0,
+        };
         if (awayStartedAtRef.current !== null) awayStartedAtRef.current = Date.now();
         scheduleMidnightReset();
       }, nextMidnight.getTime() - now.getTime());
@@ -742,6 +910,41 @@ export default function Home() {
   useEffect(() => {
     if (!authUser) return;
     try {
+      const scopedKey = userStorageKey(TODAY_AWAY_STORAGE_KEY, authUser.id);
+      const savedAway = window.localStorage.getItem(scopedKey) ?? window.localStorage.getItem(TODAY_AWAY_STORAGE_KEY);
+      if (!savedAway) return;
+
+      const parsedAway = JSON.parse(savedAway) as Partial<TodayAwayStats>;
+      if (parsedAway.date === getLocalDateKey()) {
+        setAwaySeconds(Math.max(0, Number(parsedAway.awaySeconds ?? 0)));
+        setAwayCount(Math.max(0, Number(parsedAway.awayCount ?? 0)));
+        setIdleSeconds(Math.max(0, Number(parsedAway.idleSeconds ?? 0)));
+        setIdleCount(Math.max(0, Number(parsedAway.idleCount ?? 0)));
+        setJukuAwaySeconds(Math.max(0, Number(parsedAway.jukuAwaySeconds ?? 0)));
+        setJukuAwayCount(Math.max(0, Number(parsedAway.jukuAwayCount ?? 0)));
+        awayStatsRef.current = {
+          date: parsedAway.date,
+          awaySeconds: Math.max(0, Number(parsedAway.awaySeconds ?? 0)),
+          awayCount: Math.max(0, Number(parsedAway.awayCount ?? 0)),
+          idleSeconds: Math.max(0, Number(parsedAway.idleSeconds ?? 0)),
+          idleCount: Math.max(0, Number(parsedAway.idleCount ?? 0)),
+          jukuAwaySeconds: Math.max(0, Number(parsedAway.jukuAwaySeconds ?? 0)),
+          jukuAwayCount: Math.max(0, Number(parsedAway.jukuAwayCount ?? 0)),
+          awayStartedAt: typeof parsedAway.awayStartedAt === "number" ? parsedAway.awayStartedAt : null,
+          awayAtJuku: Boolean(parsedAway.awayAtJuku),
+        };
+        window.localStorage.setItem(scopedKey, savedAway);
+      }
+    } catch {
+      window.localStorage.removeItem(userStorageKey(TODAY_AWAY_STORAGE_KEY, authUser.id));
+    } finally {
+      setAwayStatsLoaded(true);
+    }
+  }, [authUser]);
+
+  useEffect(() => {
+    if (!authUser) return;
+    try {
       const scopedKey = userStorageKey(SUBJECT_PROGRESS_STORAGE_KEY, authUser.id);
       const savedProgress = window.localStorage.getItem(scopedKey);
       if (!savedProgress) {
@@ -764,10 +967,58 @@ export default function Home() {
     void fetch("/api/guardian-report")
       .then((response) => response.ok ? response.json() : null)
       .then((data) => {
-        if (!data?.profile) return;
-        setGuardianEnabled(Boolean(data.profile.enabled));
+        if (data?.profile) setGuardianEnabled(Boolean(data.profile.enabled));
+        if (!data?.away || typeof data.away !== "object") return;
+        const remoteAway: TodayAwayStats = {
+          date: getLocalDateKey(),
+          awaySeconds: Math.max(0, Number(data.away.awaySeconds ?? 0)),
+          awayCount: Math.max(0, Number(data.away.awayCount ?? 0)),
+          idleSeconds: Math.max(0, Number(data.away.idleSeconds ?? 0)),
+          idleCount: Math.max(0, Number(data.away.idleCount ?? 0)),
+          jukuAwaySeconds: Math.max(0, Number(data.away.jukuAwaySeconds ?? 0)),
+          jukuAwayCount: Math.max(0, Number(data.away.jukuAwayCount ?? 0)),
+          awayStartedAt: typeof data.away.awayStartedAt === "number" ? data.away.awayStartedAt : null,
+          awayAtJuku: Boolean(data.away.awayAtJuku),
+        };
+        const mergedAway: TodayAwayStats = {
+          date: remoteAway.date,
+          awaySeconds: Math.max(awayStatsRef.current.awaySeconds, remoteAway.awaySeconds),
+          awayCount: Math.max(awayStatsRef.current.awayCount, remoteAway.awayCount),
+          idleSeconds: Math.max(awayStatsRef.current.idleSeconds, remoteAway.idleSeconds),
+          idleCount: Math.max(awayStatsRef.current.idleCount, remoteAway.idleCount),
+          jukuAwaySeconds: Math.max(awayStatsRef.current.jukuAwaySeconds, remoteAway.jukuAwaySeconds),
+          jukuAwayCount: Math.max(awayStatsRef.current.jukuAwayCount, remoteAway.jukuAwayCount),
+          awayStartedAt: Math.max(Number(awayStatsRef.current.awayStartedAt ?? 0), Number(remoteAway.awayStartedAt ?? 0)) || null,
+          awayAtJuku: Number(remoteAway.awayStartedAt ?? 0) >= Number(awayStatsRef.current.awayStartedAt ?? 0) ? remoteAway.awayAtJuku : awayStatsRef.current.awayAtJuku,
+        };
+        if (mergedAway.awayStartedAt) {
+          const elapsed = Math.max(1, Math.round((Date.now() - mergedAway.awayStartedAt) / 1000));
+          if (mergedAway.awayAtJuku) mergedAway.jukuAwaySeconds += elapsed;
+          else mergedAway.awaySeconds += elapsed;
+          mergedAway.awayStartedAt = null;
+          mergedAway.awayAtJuku = false;
+        }
+        awayStatsRef.current = mergedAway;
+        setAwaySeconds(mergedAway.awaySeconds);
+        setAwayCount(mergedAway.awayCount);
+        setIdleSeconds(mergedAway.idleSeconds);
+        setIdleCount(mergedAway.idleCount);
+        setJukuAwaySeconds(mergedAway.jukuAwaySeconds);
+        setJukuAwayCount(mergedAway.jukuAwayCount);
+        persistAwayStats(mergedAway);
       })
       .catch(() => undefined);
+  }, [authUser]);
+
+  useEffect(() => {
+    if (!authUser) return;
+    try {
+      const subjectKeys = ["国語", "数学", "英語", "理科", "社会", "理社ミックス"] as const;
+      const nextSeen = Object.fromEntries(subjectKeys.map((subject) => [subject, readSeenQuestionIds(authUser.id, subject)]));
+      setSeenQuestionIds(nextSeen as Record<string, string[]>);
+    } catch {
+      setSeenQuestionIds({});
+    }
   }, [authUser]);
 
   useEffect(() => {
@@ -781,9 +1032,106 @@ export default function Home() {
         .catch(() => undefined);
     };
     loadStudyMates();
-    const studyMatesTimer = window.setInterval(loadStudyMates, 60_000);
+    const studyMatesTimer = window.setInterval(loadStudyMates, 15_000);
     return () => window.clearInterval(studyMatesTimer);
   }, [authUser]);
+
+  useEffect(() => {
+    if (!authUser) return;
+
+    const mode = view === "practice"
+      ? "20問演習"
+      : view === "weekly-test"
+        ? "一斉テスト"
+        : timerMode === "stopwatch"
+          ? (FREE_STUDY_ACTIONS.find((item) => item.key === freeStudyAction)?.label ?? "フリー学習")
+          : "集中タイマー";
+    const subject = view === "practice" ? (selectedSubject ?? "") : "";
+    const detail = view === "practice"
+      ? `セット${String(setNumber).padStart(3, "0")}`
+      : view === "weekly-test"
+        ? "テストに挑戦中"
+        : timerMode === "stopwatch"
+          ? freeStudyPlan.trim()
+          : `${challengeMinutes}分チャレンジ`;
+
+    const sendPresence = (status: "studying" | "away" | "stopped", useBeacon = false) => {
+      const sessionId = presenceSessionIdRef.current;
+      if (!sessionId) return;
+      const payload = JSON.stringify({
+        sessionId,
+        status,
+        mode,
+        subject,
+        detail,
+        startedAtMs: presenceStartedAtRef.current,
+        activeSeconds: presenceActiveSecondsRef.current,
+      });
+      if (useBeacon) {
+        try {
+          navigator.sendBeacon("/api/study-presence", new Blob([payload], { type: "application/json" }));
+          return;
+        } catch {
+          // Fall through to a keepalive request when sendBeacon is unavailable.
+        }
+      }
+      void fetch("/api/study-presence", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: payload,
+        keepalive: true,
+      }).catch(() => undefined);
+    };
+
+    if (!sessionActive) {
+      if (presenceSessionIdRef.current) sendPresence("stopped", true);
+      presenceSessionIdRef.current = null;
+      presenceStartedAtRef.current = 0;
+      presenceActiveSecondsRef.current = 0;
+      setPresenceActiveSeconds(0);
+      return;
+    }
+
+    if (!presenceSessionIdRef.current) {
+      presenceSessionIdRef.current = crypto.randomUUID();
+      presenceStartedAtRef.current = Date.now();
+      presenceActiveSecondsRef.current = 0;
+      setPresenceActiveSeconds(0);
+    }
+
+    sendPresence(document.hidden ? "away" : "studying");
+    const secondTimer = window.setInterval(() => {
+      if (document.hidden) return;
+      presenceActiveSecondsRef.current += 1;
+      setPresenceActiveSeconds(presenceActiveSecondsRef.current);
+    }, 1000);
+    const heartbeatTimer = window.setInterval(() => sendPresence(document.hidden ? "away" : "studying"), 15_000);
+    const handleVisibility = () => sendPresence(document.hidden ? "away" : "studying", document.hidden);
+    const handlePageHide = () => sendPresence("away", true);
+    document.addEventListener("visibilitychange", handleVisibility);
+    window.addEventListener("pagehide", handlePageHide);
+    window.addEventListener("pageshow", handleVisibility);
+    return () => {
+      window.clearInterval(secondTimer);
+      window.clearInterval(heartbeatTimer);
+      document.removeEventListener("visibilitychange", handleVisibility);
+      window.removeEventListener("pagehide", handlePageHide);
+      window.removeEventListener("pageshow", handleVisibility);
+    };
+  }, [authUser, sessionActive]);
+
+  useEffect(() => {
+    if (!authUser) return;
+    setRegisteredStudyMates((current) => current.map((student) => (
+      student.id === authUser.id
+        ? {
+            ...student,
+            focusSeconds: reportFocusSeconds,
+            questionsSolved: todayTotal,
+          }
+        : student
+    )));
+  }, [authUser, reportFocusSeconds, todayTotal]);
 
   useEffect(() => {
     if (!authUser) return;
@@ -815,6 +1163,27 @@ export default function Home() {
       // Free-study notes are optional; continue without saved sessions.
     }
   }, [authUser]);
+
+  useEffect(() => {
+    if (!authUser || !awayStatsLoaded) return;
+    const nextAway: TodayAwayStats = {
+      date: getLocalDateKey(),
+      awaySeconds,
+      awayCount,
+      idleSeconds,
+      idleCount,
+      jukuAwaySeconds,
+      jukuAwayCount,
+      awayStartedAt: awayStatsRef.current.awayStartedAt ?? null,
+      awayAtJuku: awayStatsRef.current.awayAtJuku ?? false,
+    };
+    awayStatsRef.current = nextAway;
+    try {
+      window.localStorage.setItem(userStorageKey(TODAY_AWAY_STORAGE_KEY, authUser.id), JSON.stringify(nextAway));
+    } catch {
+      // Daily away stats are best-effort persisted in the browser.
+    }
+  }, [authUser, awayStatsLoaded, awaySeconds, awayCount, idleSeconds, idleCount, jukuAwaySeconds, jukuAwayCount]);
 
   useEffect(() => {
     if (!authUser || focusQuestions.length > 0) return;
@@ -851,17 +1220,31 @@ export default function Home() {
       : freeStudyHasPlan
         ? "内容メモあり"
         : "時間のみ";
-  const freeStudyRisk = stopwatchSeconds > 0 && !freeStudyResult.trim() && (awaySeconds + idleSeconds > Math.max(180, stopwatchSeconds * 0.2));
+  const freeStudyAtJuku = freeStudyAction === "juku";
+  const freeStudyAwaySeconds = freeStudyAtJuku ? jukuAwaySeconds : awaySeconds;
+  const freeStudyRisk = stopwatchSeconds > 0 && !freeStudyAtJuku && !freeStudyResult.trim() && (awaySeconds + idleSeconds > Math.max(180, stopwatchSeconds * 0.2));
   const todayAccuracyGraph = todayAccuracy ?? 0;
   const guardianSummary = useMemo(() => ({
+    summaryDate: getLocalDateKey(),
     focusSeconds: reportFocusSeconds,
     awaySeconds: awaySeconds + idleSeconds,
     questionsSolved: todayTotal,
     correctAnswers: todayCorrect,
     wrongAnswers: todayWrong,
-  }), [awaySeconds, idleSeconds, reportFocusSeconds, todayCorrect, todayTotal, todayWrong]);
+    away: {
+      awaySeconds,
+      awayCount,
+      idleSeconds,
+      idleCount,
+      jukuAwaySeconds,
+      jukuAwayCount,
+      awayStartedAt: awayStatsRef.current.awayStartedAt ?? null,
+      awayAtJuku: awayStatsRef.current.awayAtJuku ?? false,
+    },
+  }), [awayCount, awaySeconds, idleCount, idleSeconds, jukuAwayCount, jukuAwaySeconds, reportFocusSeconds, todayCorrect, todayTotal, todayWrong]);
   const guardianSummaryRef = useRef(guardianSummary);
   guardianSummaryRef.current = guardianSummary;
+  const lastSyncedSummaryRef = useRef<string>("");
 
   useEffect(() => {
     if (!authUser) return;
@@ -890,37 +1273,67 @@ export default function Home() {
   const dailyStreakMessage = useMemo(() => getDailyStreakMessage(dailyMessageDate), [dailyMessageDate]);
   const studyMateRows = useMemo(() => {
     const registeredColors = ["yellow", "blue", "green", "coral", "purple"];
-    const modelRows = liveStudyMates.map((mate, index) => ({
-      id: `model-${mate.name}`,
-      name: mate.name,
-      startTime: `${mate.startTime}〜`,
-      subject: mate.subject,
-      unit: mate.unit,
-      minutes: liveMinutes[index] ?? mate.minutes,
-      color: mate.color,
-      tier: mate.tier,
-      pace: mate.pace,
-      badge: "目標",
-      isMe: false,
-    }));
-    const registeredRows = registeredStudyMates.map((student, index) => {
-      const minutes = Math.floor(Math.max(0, student.focusSeconds) / 60);
+    return registeredStudyMates.map((student, index) => {
+      const isLocallyStudying = student.isMe && sessionActive;
+      const status = isLocallyStudying ? "studying" : student.status;
+      const activeSeconds = isLocallyStudying ? presenceActiveSeconds : student.activeSeconds;
+      const minutes = Math.floor(Math.max(0, status === "studying" || status === "away" ? activeSeconds : student.focusSeconds) / 60);
+      const hasStudyTime = minutes > 0 || student.questionsSolved > 0;
+      const activity = isLocallyStudying
+        ? view === "practice"
+          ? `${selectedSubject ?? "演習"}・20問演習`
+          : view === "weekly-test"
+            ? "一斉テスト"
+            : timerMode === "stopwatch"
+              ? (FREE_STUDY_ACTIONS.find((item) => item.key === freeStudyAction)?.label ?? "フリー学習")
+              : "集中タイマー"
+        : [student.subject, student.mode].filter(Boolean).join("・");
       return {
         id: student.id,
         name: student.displayName,
-        startTime: student.isMe ? "自分" : "登録済",
-        subject: student.questionsSolved > 0 ? "今日の演習" : "準備中",
-        unit: student.questionsSolved > 0 ? `${student.questionsSolved}問クリア` : "まずは20問から",
+        startTime: status === "studying" || status === "away"
+          ? formatJstStartTime(isLocallyStudying ? presenceStartedAtRef.current : student.startedAtMs)
+          : "—",
+        activity: activity || (hasStudyTime ? `今日は${student.questionsSolved}問` : "今日はまだ"),
+        detail: isLocallyStudying ? "取り組み中" : student.detail,
         minutes,
         color: registeredColors[index % registeredColors.length],
-        tier: student.isMe ? "YOU" : "参加中",
-        pace: minutes > 0 ? "実記録" : "未開始",
-        badge: student.isMe ? "YOU" : "実参加",
+        badge: student.isMe ? "YOU" : status === "studying" ? "勉強中" : status === "away" ? "一時離席" : hasStudyTime ? "今日済" : "未開始",
         isMe: student.isMe,
+        status,
       };
     });
-    return [...modelRows, ...registeredRows];
-  }, [liveMinutes, registeredStudyMates]);
+  }, [freeStudyAction, presenceActiveSeconds, registeredStudyMates, selectedSubject, sessionActive, timerMode, view]);
+  const studyingMateCount = studyMateRows.filter((mate) => mate.status === "studying").length;
+
+  const rankingEntries = useMemo(() => {
+    const palette = ["purple", "blue", "coral", "green", "yellow"] as const;
+    const baseEntries = registeredStudyMates.length > 0
+      ? [...registeredStudyMates]
+          .sort((left, right) => {
+            const rightScore = right.focusSeconds + right.questionsSolved * 18;
+            const leftScore = left.focusSeconds + left.questionsSolved * 18;
+            return rightScore - leftScore || Number(right.isMe) - Number(left.isMe);
+          })
+          .map((student, index) => ({
+            rank: index + 1,
+            name: student.displayName,
+            time: formatStudyTime(Math.floor(Math.max(0, student.focusSeconds) / 60)),
+            streak: Math.max(1, Math.floor(Math.max(0, student.questionsSolved) / 4) + 1),
+            color: palette[index % palette.length],
+            me: student.isMe,
+          }))
+      : leaderboard;
+    const filler = leaderboard
+      .filter((entry) => !baseEntries.some((student) => student.name === entry.name))
+      .slice(0, Math.max(0, 5 - baseEntries.length))
+      .map((entry, index) => ({
+        ...entry,
+        rank: baseEntries.length + index + 1,
+      }));
+    return [...baseEntries.slice(0, 5), ...filler].slice(0, 5);
+  }, [registeredStudyMates]);
+
   const weeklyStartMs = weeklyTest ? new Date(weeklyTest.startsAt).getTime() : 0;
   const weeklyEndMs = weeklyTest ? weeklyStartMs + weeklyTest.durationMinutes * 60_000 : 0;
   const weeklyRemainingSeconds = weeklyTest?.kind === "active" ? Math.max(0, Math.ceil((weeklyEndMs - weeklyNow) / 1000)) : 0;
@@ -1026,25 +1439,71 @@ export default function Home() {
   useEffect(() => {
     if (!authUser) return;
     const syncSummary = () => {
+      const serialized = JSON.stringify(guardianSummaryRef.current);
+      if (serialized === lastSyncedSummaryRef.current) return;
+      lastSyncedSummaryRef.current = serialized;
+      const { summaryDate, away, ...summary } = guardianSummaryRef.current;
+      const payload = JSON.stringify({ action: "summary", summaryDate, summary, away });
       void fetch("/api/guardian-report", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "summary", summary: guardianSummaryRef.current }),
-      }).catch(() => undefined);
+        body: payload,
+        keepalive: true,
+      })
+        .then(() => {
+          void fetch("/api/study-mates", { cache: "no-store" })
+            .then((response) => response.ok ? response.json() : null)
+            .then((data) => {
+              if (Array.isArray(data?.students)) setRegisteredStudyMates(data.students as RegisteredStudyMate[]);
+            })
+            .catch(() => undefined);
+        })
+        .catch(() => undefined);
     };
     syncSummary();
-    const syncTimer = window.setInterval(syncSummary, 60_000);
-    return () => window.clearInterval(syncTimer);
+    const syncTimer = window.setInterval(syncSummary, 5_000);
+    const onVisibilityChange = () => {
+      if (!document.hidden) syncSummary();
+    };
+    const onPageHide = () => {
+      const { summaryDate, away, ...summary } = guardianSummaryRef.current;
+      const payload = JSON.stringify({ action: "summary", summaryDate, summary, away });
+      try {
+        navigator.sendBeacon("/api/guardian-report", new Blob([payload], { type: "application/json" }));
+      } catch {
+        syncSummary();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("pagehide", onPageHide);
+    return () => {
+      window.clearInterval(syncTimer);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("pagehide", onPageHide);
+    };
   }, [authUser]);
+
+  useEffect(() => {
+    if (!authUser) return;
+    const syncSummary = window.setTimeout(() => {
+      const serialized = JSON.stringify(guardianSummaryRef.current);
+      if (serialized === lastSyncedSummaryRef.current) return;
+      lastSyncedSummaryRef.current = serialized;
+      const { summaryDate, away, ...summary } = guardianSummaryRef.current;
+      void fetch("/api/guardian-report", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "summary", summaryDate, summary, away }),
+        keepalive: true,
+      }).catch(() => undefined);
+    }, 2500);
+    return () => window.clearTimeout(syncSummary);
+  }, [authUser, guardianSummary]);
 
   const resetAwayTracking = () => {
     awayStartedAtRef.current = null;
     idleActiveRef.current = false;
     lastStudyActionAtRef.current = Date.now();
-    setAwaySeconds(0);
-    setAwayCount(0);
-    setIdleSeconds(0);
-    setIdleCount(0);
   };
 
   const changeChallengeMinutes = (minutes: number) => {
@@ -1078,12 +1537,13 @@ export default function Home() {
     if (!authUser || stopwatchSeconds <= 0) return;
     const nextSession: FreeStudySession = {
       id: `free-${Date.now()}`,
-      action: freeStudyAction,
+      action: FREE_STUDY_ACTIONS.find((item) => item.key === freeStudyAction)?.label ?? "???",
       plan: freeStudyPlan.trim(),
       result: freeStudyResult.trim(),
       seconds: stopwatchSeconds,
       awaySeconds,
       idleSeconds,
+      jukuAwaySeconds,
       savedAt: new Date().toISOString(),
     };
     setFreeStudySessions((current) => {
@@ -1162,22 +1622,36 @@ export default function Home() {
     setSubjectPickerOpen(true);
   };
 
-  const fetchPracticeSet = async (subject: StudySubject, targetSet: number, round: number) => {
+  const fetchPracticeSet = async (subject: StudySubject, targetSet: number, round: number, excludeIds: string[] = [], excludeKeys: string[] = []) => {
+    // Once a learner has a history, the API already removes every prior question.
+    // Start at the first remaining page instead of skipping a fresh block of 20.
+    const requestedSet = excludeIds.length > 0 || excludeKeys.length > 0 ? 1 : targetSet;
     const params = new URLSearchParams({
       subject,
-      set: String(targetSet),
+      set: String(requestedSet),
       round: String(round),
       count: String(QUESTIONS_PER_SET),
     });
+    if (excludeIds.length > 0) params.set("excludeIds", excludeIds.join(","));
+    if (excludeKeys.length > 0) params.set("excludeKeys", excludeKeys.join(","));
     const response = await fetch(`/api/practice-questions?${params.toString()}`);
     if (!response.ok) throw new Error("question bank unavailable");
     return await response.json() as { questions: Question[]; totalSets: number; totalQuestions: number };
   };
 
+  const loadNextPracticeSet = async (subject: StudySubject, targetSet: number, round: number) => {
+    const seenIds = authUser ? readSeenQuestionIds(authUser.id, subject) : [];
+    const seenKeys = authUser ? readSeenQuestionKeys(authUser.id, subject) : [];
+    const data = await fetchPracticeSet(subject, targetSet, round, seenIds, seenKeys);
+    appendSeenQuestionIds(authUser?.id ?? null, subject, data.questions);
+    if (authUser) setSeenQuestionIds((current) => ({ ...current, [subject]: [...(current[subject] ?? []), ...data.questions.map((question) => question.id)] }));
+    return data;
+  };
+
   const startSubjectPractice = async (subject: StudySubject, timerMinutes: number | null) => {
     setLoadingSubject(subject);
     try {
-      const data = await fetchPracticeSet(subject, 1, 1);
+      const data = await loadNextPracticeSet(subject, 1, 1);
       setSelectedSubject(subject);
       setQuestionSequence(data.questions);
       setPracticeTotalSets(data.totalSets);
@@ -1214,7 +1688,7 @@ export default function Home() {
     try {
       const nextRound = setNumber >= totalSets ? shuffleRound + 1 : shuffleRound;
       const nextSet = setNumber >= totalSets ? 1 : setNumber + 1;
-      const data = await fetchPracticeSet(selectedSubject, nextSet, nextRound);
+      const data = await loadNextPracticeSet(selectedSubject, nextSet, nextRound);
       setQuestionSequence(data.questions);
       setPracticeTotalSets(data.totalSets);
       setSetNumber(nextSet);
@@ -1424,13 +1898,13 @@ export default function Home() {
             <section className="hero">
               <div className="hero-copy">
                 <p className="eyebrow">TODAY&apos;S MISSION</p>
-                <div className="hero-pills"><span>● 4人が勉強中</span><span>今日も一歩、前へ</span></div>
+                <div className="hero-pills"><span>● {studyMateRows.length}人が勉強中</span><span>今日も一歩、前へ</span></div>
                 <h1>今日も、<br /><em>{authUser.displayName}</em>の伸びしろが<br />動き出す。</h1>
                 <p>勉強も、仲間も、今日しかない。未来の自分へ、最高の一日を。</p>
               </div>
               <div className="streak-card">
                 <span className="flame">✦</span>
-                <div><strong>{loginDaysCount}</strong><span>DAYS</span></div>
+                <div><strong>{loginDaysCount}</strong><span>{loginDaysCount === 1 ? "DAY" : "DAYS"}</span></div>
                 <p>{dailyStreakMessage}</p>
               </div>
             </section>
@@ -1493,18 +1967,19 @@ export default function Home() {
                 <button className="round-button" onClick={() => changeView("timer")} aria-label="タイマーを開く">▶</button>
               </article>
               <article className="friends-card">
-                <div className="section-heading compact"><div><p className="eyebrow">KINKI RIVAL PACE</p><h2>近畿圏55勢、いま進行中。</h2></div><span className="online bot-online">{studyMateRows.length}人</span></div>
-                <p className="bot-study-note">目標ペース3人と、登録した生徒の今日の実記録を一緒に表示します。</p>
+                <div className="section-heading compact"><div><p className="eyebrow">STUDY MATES</p><h2>みんなの今日が、動いてる。</h2></div><span className={`online${studyingMateCount === 0 ? " offline" : ""}`}>{studyingMateCount}人が勉強中</span></div>
+                <p className="bot-study-note">登録メンバーだけを、実際の学習状態と時間で表示します。</p>
                 <div className="study-live-head"><span>仲間</span><span>開始</span><span>学習時間</span></div>
                 <div className="study-live-list">
                   {studyMateRows.map((mate) => (
-                    <div className={`study-person${mate.isMe ? " me" : ""}`} key={mate.id}>
+                    <div className={`study-person is-${mate.status}${mate.isMe ? " me" : ""}`} key={mate.id}>
                       <span className={`friend-avatar ${mate.color}`}>{mate.name[0]}<i /></span>
-                      <div className="study-person-copy"><strong>{mate.name}<em>{mate.badge}</em></strong><small>{mate.tier}｜{mate.subject}・{mate.unit}</small><b>{mate.pace}</b></div>
+                      <div className="study-person-copy"><strong>{mate.name}<em>{mate.badge}</em></strong><small>{mate.activity}{mate.detail ? `・${mate.detail}` : ""}</small></div>
                       <time>{mate.startTime}</time>
-                      <span className="elapsed-time">{formatStudyTime(mate.minutes)}</span>
+                      <span className="elapsed-time">{mate.status === "not_started" ? "—" : formatStudyTime(mate.minutes)}</span>
                     </div>
                   ))}
+                  {studyMateRows.length === 0 && <p className="study-live-empty">登録メンバーがまだいません。</p>}
                 </div>
               </article>
             </section>
@@ -1649,43 +2124,47 @@ export default function Home() {
               <div className="duration-presets">{FOCUS_TIMER_OPTIONS.map((minutes) => <button key={minutes} disabled={running} className={challengeMinutes === minutes ? "active" : ""} onClick={() => changeChallengeMinutes(minutes)}>{minutes}分</button>)}</div>
               <label><input type="number" min="1" max="360" value={challengeMinutes} disabled={running} onChange={(event) => changeChallengeMinutes(Number(event.target.value))} aria-label="チャレンジ時間（分）" /><span>分</span></label>
             </div>}
-            {timerMode === "stopwatch" && <section className="free-study-card" aria-label="フリー学習の内容">
-              <div className="free-study-head"><div><span>WHAT DID YOU DO?</span><strong>何をしたかも、記録する。</strong></div><em className={freeStudyRisk ? "risk" : ""}>{freeStudyReliability}</em></div>
+            {timerMode === "stopwatch" && <section className="free-study-card" aria-label="何をしたかも、記録する。">
+              <div className="free-study-head">
+                <div><span>WHAT DID YOU DO?</span><strong>何をしたかも、記録する。</strong></div>
+                <em className={freeStudyRisk ? "risk" : ""}>{freeStudyAtJuku ? "塾はノーカウント" : freeStudyReliability}</em>
+              </div>
               <div className="free-study-actions">
-                {FREE_STUDY_ACTIONS.map((action) => <button key={action} className={freeStudyAction === action ? "active" : ""} disabled={stopwatchRunning} onClick={() => setFreeStudyAction(action)}>{action}</button>)}
+                {FREE_STUDY_ACTIONS.map((action) => <button key={action.key} className={`${freeStudyAction === action.key ? "active" : ""}${action.key === "juku" ? " juku-action" : ""}`} disabled={stopwatchRunning} onClick={() => setFreeStudyAction(action.key)}>{action.label}</button>)}
               </div>
               <label className="free-study-input"><span>開始前：今日は何をする？</span><input value={freeStudyPlan} disabled={stopwatchRunning} onChange={(event) => setFreeStudyPlan(event.target.value)} placeholder="例：数学ワーク P32〜35、英単語50個" /></label>
-              {stopwatchSeconds > 0 && <label className="free-study-input"><span>終了後：実際に何ができた？</span><textarea value={freeStudyResult} onChange={(event) => setFreeStudyResult(event.target.value)} placeholder="例：連立方程式12問、丸つけまで。間違いは3問。" /></label>}
-              <p>フリー計測は「自己申告」です。内容メモや成果メモがあるほど、管理者が見た時の信頼度が上がります。</p>
+              {stopwatchSeconds > 0 && <label className="free-study-input"><span>終了後：今日は何をした？</span><textarea value={freeStudyResult} onChange={(event) => setFreeStudyResult(event.target.value)} placeholder="例：ワーク2周、英単語50個、間違い直し完了" /></label>}
+              <p>{freeStudyAtJuku ? "塾モードでは離脱時間や放置時間を記録しません。授業中の利用はノーカウントです。" : "フリー計測中は、やった内容と時間を記録して後で見返せます。"}</p>
             </section>}
-            <div className={`timer-orbit ${(timerMode === "countdown" ? running : stopwatchRunning) ? "running" : ""}`}><span>{timerMode === "countdown" ? "残り時間" : "経過時間"}</span><strong>{timerMode === "countdown" ? timerLabel : stopwatchLabel}</strong><small>{timerMode === "countdown" ? running ? "集中中" : seconds === 0 ? "達成！" : "準備OK" : stopwatchRunning ? "計測中" : stopwatchSeconds > 0 ? "一時停止中" : "準備OK"}</small></div>
+            <div className={`timer-orbit ${(timerMode === "countdown" ? running : stopwatchRunning) ? "running" : ""}`}><span>{timerMode === "countdown" ? "残り時間" : "経過時間"}</span><strong>{timerMode === "countdown" ? timerLabel : stopwatchLabel}</strong><small>{timerMode === "countdown" ? running ? "計測中" : seconds === 0 ? "終了" : "準備OK" : stopwatchRunning ? "計測中" : stopwatchSeconds > 0 ? "記録待ち" : "準備OK"}</small></div>
             {timerMode === "countdown" ? <div className="timer-actions">
-              <button className="secondary-button" onClick={() => { setRunning(false); setSeconds(challengeMinutes * 60); resetAwayTracking(); }}>↺ リセット</button>
-              <button className="primary-button timer-start" onClick={() => setRunning((current) => !current)} disabled={seconds === 0}>{running ? "一時停止" : "集中をスタート"} {running ? "Ⅱ" : "▶"}</button>
+              <button className="secondary-button" onClick={() => { setRunning(false); setSeconds(challengeMinutes * 60); resetAwayTracking(); }}>リセット</button>
+              <button className="primary-button timer-start" onClick={() => setRunning((current) => !current)} disabled={seconds === 0}>{running ? "一時停止" : "計測スタート"} {running ? "⏸" : "▶"}</button>
             </div> : <div className="timer-actions">
-              <button className="secondary-button" onClick={resetFreeStopwatch}>↺ リセット</button>
-              <button className="primary-button timer-start stopwatch-start" onClick={toggleFreeStopwatch} disabled={!stopwatchRunning && !freeStudyHasPlan}>{stopwatchRunning ? "一時停止" : stopwatchSeconds > 0 ? "計測を再開" : "内容を書いてスタート"} {stopwatchRunning ? "Ⅱ" : "▶"}</button>
-              {stopwatchSeconds > 0 && <button className="secondary-button save-free-study" onClick={saveFreeStudySession}>成果を保存</button>}
+              <button className="secondary-button" onClick={resetFreeStopwatch}>リセット</button>
+              <button className="primary-button timer-start stopwatch-start" onClick={toggleFreeStopwatch} disabled={!stopwatchRunning && !freeStudyHasPlan}>{stopwatchRunning ? "一時停止" : stopwatchSeconds > 0 ? "再開" : "計測をスタート"} {stopwatchRunning ? "⏸" : "▶"}</button>
+              {stopwatchSeconds > 0 && <button className="secondary-button save-free-study" onClick={saveFreeStudySession}>記録を保存</button>}
             </div>}
-            {timerMode === "stopwatch" && freeStudySessions.length > 0 && <section className="free-study-history" aria-label="フリー学習の履歴">
-              <div className="free-study-head"><div><span>RECENT FREE STUDY</span><strong>最近の自己申告</strong></div></div>
-              {freeStudySessions.slice(0, 3).map((session) => <article key={session.id}><span>{session.action}</span><strong>{Math.floor(session.seconds / 60)}分</strong><p>{session.result || session.plan}</p><small>離脱 {formatAwayTime(session.awaySeconds)}・未確認 {formatAwayTime(session.idleSeconds)}</small></article>)}
+            {timerMode === "stopwatch" && freeStudySessions.length > 0 && <section className="free-study-history" aria-label="最近のフリー記録">
+              <div className="free-study-head"><div><span>RECENT FREE STUDY</span><strong>最近の記録</strong></div></div>
+              {freeStudySessions.slice(0, 3).map((session) => <article key={session.id}><span>{session.action}</span><strong>{Math.floor(session.seconds / 60)}分</strong><p>{session.result || session.plan}</p><small>{session.action === "塾" ? `塾 ${formatAwayTime(session.jukuAwaySeconds)} / 離脱 ${formatAwayTime(session.awaySeconds)} / 放置 ${formatAwayTime(session.idleSeconds)}` : `離脱 ${formatAwayTime(session.awaySeconds)} / 放置 ${formatAwayTime(session.idleSeconds)}`}</small></article>)}
             </section>}
             <section className={`away-monitor ${sessionActive ? "monitoring" : ""}`} aria-label="離脱時間モニター">
-              <div className="away-monitor-head"><div><span className="monitor-dot" /><strong>離脱時間モニター</strong></div><span className="monitor-status">{idleActiveRef.current ? "未確認中" : sessionActive ? "計測中" : "待機中"}</span></div>
-              <div className="away-metrics"><div><span>離脱時間</span><strong>{awayTimeLabel}</strong></div><div><span>未確認時間</span><strong>{idleTimeLabel}</strong></div><div><span>検出回数</span><strong>{awayCount + idleCount}<small>回</small></strong></div></div>
-              <p>別タブ・別アプリ・画面オフに加えて、90秒以上タップやスクロールがない時間も「未確認時間」として分けて記録します。</p>
+              <div className="away-monitor-head"><div><span className="monitor-dot" /><strong>離脱時間モニター</strong></div><span className="monitor-status">{idleActiveRef.current ? "放置中" : sessionActive ? "計測中" : "待機中"}</span></div>
+              <div className="away-metrics"><div><span>{freeStudyAtJuku ? "塾時間の離脱" : "離脱時間"}</span><strong>{formatAwayTime(freeStudyAwaySeconds)}</strong></div><div><span>放置時間</span><strong>{freeStudyAtJuku ? "0分0秒" : idleTimeLabel}</strong></div><div><span>回数</span><strong>{(freeStudyAtJuku ? jukuAwayCount : awayCount) + (freeStudyAtJuku ? 0 : idleCount)}<small>回</small></strong></div></div>
+              <p>{freeStudyAtJuku ? "塾モード中は、離脱時間や放置時間はノーカウントです。" : "別タブ・別アプリ・画面オフの時間を自動で記録します。90秒以上止まると放置時間も加算されます。"}</p>
             </section>
-            <div className="focus-rules"><div className={awaySeconds + idleSeconds > 0 ? "away-recorded" : ""}><Icon>◷</Icon><strong>やってない疑いも記録</strong><span>{awaySeconds + idleSeconds > 0 ? `離脱${awayTimeLabel}・未確認${idleTimeLabel}` : "開きっぱなし時間を見える化"}</span></div><div><Icon>✓</Icon><strong>問題行動とセットで評価</strong><span>時間だけでなく、問題数や採点も見ます</span></div></div>
+            <div className="focus-rules"><div className={awaySeconds + idleSeconds > 0 ? "away-recorded" : ""}><Icon>◌</Icon><strong>離脱時間の扱い</strong><span>{freeStudyAtJuku ? `塾中は ${formatAwayTime(jukuAwaySeconds)} も集計に入れません` : awaySeconds + idleSeconds > 0 ? `記録中 ${awayTimeLabel} / 放置 ${idleTimeLabel}` : "離脱なしで計測中"}</span></div><div><Icon>★</Icon><strong>集中時間の考え方</strong><span>やった時間だけを記録して、塾ではノーカウントにできます。</span></div></div>
           </section>
         )}
+
 
         {view === "ranking" && (
           <section className="ranking-page">
             <div className="ranking-hero"><div><p className="eyebrow">LEADERBOARD</p><h1>みんなの頑張りが、<br />次の一歩になる。</h1></div><div className="rank-badge"><span>YOUR RANK</span><strong>2</strong><small>昨日より 1 UP ↑</small></div></div>
             <div className="period-tabs">{["今日", "今週", "今月"].map((period) => <button key={period} className={rankPeriod === period ? "active" : ""} onClick={() => setRankPeriod(period)}>{period}</button>)}</div>
             <div className="ranking-list">
-              {leaderboard.map((person) => (
+              {rankingEntries.map((person) => (
                 <article key={person.rank} className={person.me ? "me" : ""}><span className={`rank-number rank-${person.rank}`}>{person.rank}</span><span className={`friend-avatar ${person.color}`}>{person.name[0]}</span><div><strong>{person.name}{person.me && <em>YOU</em>}</strong><small>🔥 {person.streak}日連続</small></div><span className="rank-time">{person.time}<small>集中時間</small></span></article>
               ))}
             </div>

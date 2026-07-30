@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 export const guardianProfiles = sqliteTable("guardian_profiles", {
   studentId: text("student_id").primaryKey(),
@@ -23,6 +23,75 @@ export const dailySummaries = sqliteTable("daily_summaries", {
   wrongAnswers: integer("wrong_answers").notNull().default(0),
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 }, (table) => [uniqueIndex("daily_summaries_student_date_idx").on(table.studentId, table.summaryDate)]);
+
+/** One durable row for each student and JST calendar day they signed in. */
+export const studentLoginDays = sqliteTable("student_login_days", {
+  studentId: text("student_id").notNull(),
+  loginDate: text("login_date").notNull(),
+  firstLoggedInAt: text("first_logged_in_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [uniqueIndex("student_login_days_student_date_idx").on(table.studentId, table.loginDate)]);
+
+/** Latest cross-device presence for the home screen's live study roster. */
+export const studyPresence = sqliteTable("study_presence", {
+  studentId: text("student_id").primaryKey(),
+  sessionId: text("session_id").notNull(),
+  status: text("status").notNull().default("stopped"),
+  mode: text("mode").notNull().default("study"),
+  subject: text("subject").notNull().default(""),
+  detail: text("detail").notNull().default(""),
+  startedAtMs: integer("started_at_ms").notNull().default(0),
+  activeSeconds: integer("active_seconds").notNull().default(0),
+  lastSeenAtMs: integer("last_seen_at_ms").notNull().default(0),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [index("study_presence_status_seen_idx").on(table.status, table.lastSeenAtMs)]);
+
+/** Questions that have been shown to a student. This prevents accidental repeats. */
+export const questionDeliveries = sqliteTable("question_deliveries", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  studentId: text("student_id").notNull(),
+  questionId: text("question_id").notNull(),
+  questionKey: text("question_key").notNull(),
+  subject: text("subject").notNull(),
+  firstDeliveredAt: text("first_delivered_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  lastDeliveredAt: text("last_delivered_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("question_deliveries_student_question_idx").on(table.studentId, table.questionId),
+  uniqueIndex("question_deliveries_student_key_idx").on(table.studentId, table.questionKey),
+  index("question_deliveries_student_subject_idx").on(table.studentId, table.subject),
+]);
+
+/** Immutable answer history: the original answer and the student's self-grade. */
+export const practiceAttempts = sqliteTable("practice_attempts", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  studentId: text("student_id").notNull(),
+  questionId: text("question_id").notNull(),
+  questionKey: text("question_key").notNull(),
+  subject: text("subject").notNull(),
+  answerText: text("answer_text").notNull().default(""),
+  result: text("result").notNull(),
+  source: text("source").notNull().default("practice"),
+  attemptedAt: text("attempted_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  index("practice_attempts_student_question_time_idx").on(table.studentId, table.questionId, table.attemptedAt),
+  index("practice_attempts_student_date_idx").on(table.studentId, table.attemptedAt),
+]);
+
+/** The active, student-specific retry queue. A correct retry marks it mastered. */
+export const mistakeNotes = sqliteTable("mistake_notes", {
+  studentId: text("student_id").notNull(),
+  questionId: text("question_id").notNull(),
+  questionKey: text("question_key").notNull(),
+  subject: text("subject").notNull(),
+  questionJson: text("question_json").notNull(),
+  status: text("status").notNull().default("active"),
+  wrongCount: integer("wrong_count").notNull().default(1),
+  lastWrongAt: text("last_wrong_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  masteredAt: text("mastered_at"),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("mistake_notes_student_question_idx").on(table.studentId, table.questionId),
+  index("mistake_notes_student_status_idx").on(table.studentId, table.status),
+]);
 
 export const guardianNotificationLogs = sqliteTable("guardian_notification_logs", {
   id: integer("id").primaryKey({ autoIncrement: true }),

@@ -15,6 +15,17 @@
   --line: #e8e7df;
 }
 
+.study-person.me { background: #fffdf0; box-shadow: inset 0 0 0 1px rgba(217,255,105,.75); }
+.study-person-copy strong em { margin-left: 6px; padding: 2px 6px; border-radius: 999px; background: #e8f8f2; color: var(--green); font-size: 7px; font-style: normal; font-weight: 900; }
+.online.offline { color: #9b99aa; }
+.online.offline::before { background: #c8c6d1; }
+.study-person.is-away .friend-avatar i { background: var(--yellow); }
+.study-person.is-studied_today .friend-avatar i,
+.study-person.is-not_started .friend-avatar i { background: #c8c6d1; }
+.study-person.is-away .study-person-copy strong em { background: #fff4d7; color: #9a6b00; }
+.study-person.is-not_started { opacity: .7; }
+.study-live-empty { margin: 8px 0 0; padding: 18px; border-radius: 12px; background: #f8f7f3; color: var(--muted); font-size: 10px; text-align: center; }
+
 * { box-sizing: border-box; }
 html { scroll-behavior: smooth; }
 body { margin: 0; background: var(--paper); color: var(--ink); font-family: "Hiragino Sans", "Yu Gothic UI", "Noto Sans JP", sans-serif; }

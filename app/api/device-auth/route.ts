@@ -12,6 +12,7 @@ import {
   SESSION_COOKIE,
   type DeviceAuthEnv,
 } from "../../../lib/device-auth";
+import { recordStudentLogin } from "../../../lib/study-records";
 
 const SESSION_SECONDS = 30 * 24 * 60 * 60;
 const DEVICE_SECONDS = 365 * 24 * 60 * 60;
@@ -41,7 +42,10 @@ export async function GET(request: Request) {
   const runtime = env as unknown as DeviceAuthEnv;
   await ensureDeviceAuthTables(runtime.DB);
   const user = await getAuthenticatedDeviceUser(request, runtime.DB);
-  if (user) return Response.json({ authenticated: true, user });
+  if (user) {
+    await recordStudentLogin(runtime.DB, user.id);
+    return Response.json({ authenticated: true, user });
+  }
 
   const deviceToken = parseCookies(request).get(DEVICE_COOKIE);
   if (!deviceToken) return Response.json({ authenticated: false, requiresSetup: true });
@@ -89,6 +93,7 @@ export async function POST(request: Request) {
       (id, display_name, device_token_hash, pin_salt, pin_hash)
       VALUES (?, ?, ?, ?, ?)`)
       .bind(userId, displayName, deviceHash, pinSalt, pinHash).run();
+    await recordStudentLogin(runtime.DB, userId);
     const sessionToken = await startSession(runtime.DB, userId);
     return jsonWithCookies({ authenticated: true, user: { id: userId, displayName } }, request, [
       [DEVICE_COOKIE, deviceToken, DEVICE_SECONDS],
@@ -119,6 +124,7 @@ export async function POST(request: Request) {
 
     await runtime.DB.prepare("UPDATE device_users SET failed_attempts = 0, locked_until = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
       .bind(profile.id).run();
+    await recordStudentLogin(runtime.DB, String(profile.id));
     const sessionToken = await startSession(runtime.DB, String(profile.id));
     return jsonWithCookies({ authenticated: true, user: { id: profile.id, displayName: profile.display_name } }, request, [
       [SESSION_COOKIE, sessionToken, SESSION_SECONDS],

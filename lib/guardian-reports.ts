@@ -11,6 +11,19 @@ export type DailySummaryInput = {
   wrongAnswers: number;
 };
 
+/** Daily away data is separate from the guardian summary so navigation never
+ * resets a student's count before the next report sync. */
+export type DailyAwayInput = {
+  awaySeconds: number;
+  awayCount: number;
+  idleSeconds: number;
+  idleCount: number;
+  jukuAwaySeconds: number;
+  jukuAwayCount: number;
+  awayStartedAt?: number | null;
+  awayAtJuku?: boolean;
+};
+
 export async function ensureGuardianReportTables(db: D1Database) {
   await db.batch([
     db.prepare(`CREATE TABLE IF NOT EXISTS guardian_profiles (
@@ -34,6 +47,20 @@ export async function ensureGuardianReportTables(db: D1Database) {
       wrong_answers INTEGER NOT NULL DEFAULT 0,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       UNIQUE(student_id, summary_date)
+    )`),
+    db.prepare(`CREATE TABLE IF NOT EXISTS daily_away_stats (
+      student_id TEXT NOT NULL,
+      summary_date TEXT NOT NULL,
+      away_seconds INTEGER NOT NULL DEFAULT 0,
+      away_count INTEGER NOT NULL DEFAULT 0,
+      idle_seconds INTEGER NOT NULL DEFAULT 0,
+      idle_count INTEGER NOT NULL DEFAULT 0,
+      juku_away_seconds INTEGER NOT NULL DEFAULT 0,
+      juku_away_count INTEGER NOT NULL DEFAULT 0,
+      away_started_at INTEGER,
+      away_at_juku INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY(student_id, summary_date)
     )`),
     db.prepare(`CREATE TABLE IF NOT EXISTS guardian_notification_logs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

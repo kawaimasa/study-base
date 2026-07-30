@@ -19,11 +19,13 @@ export async function GET(request: Request) {
     FROM daily_away_stats WHERE student_id = ? AND summary_date = ?`)
     .bind(user.id, jstDateKey()).first<Record<string, number>>();
   const today = jstDateKey();
-  const [savedSummary, sessionFocus, records] = await Promise.all([
+  const [savedSummary, sessionFocus, sessionCount, records] = await Promise.all([
     runtime.DB.prepare(`SELECT focus_seconds, away_seconds, questions_solved, correct_answers, wrong_answers
       FROM daily_summaries WHERE student_id = ? AND summary_date = ?`)
       .bind(user.id, today).first<Record<string, number>>(),
     studentDailyFocusSeconds(runtime.DB, user.id, today),
+    runtime.DB.prepare("SELECT COUNT(*) AS count FROM study_session_totals WHERE student_id = ? AND summary_date = ? AND is_juku = 0")
+      .bind(user.id, today).first<{ count: number }>(),
     studentRecordSnapshot(runtime.DB, user.id),
   ]);
   return Response.json({
@@ -41,11 +43,11 @@ export async function GET(request: Request) {
     } : null,
     summary: {
       summaryDate: today,
-      focusSeconds: Math.max(Number(savedSummary?.focus_seconds ?? 0), sessionFocus),
+      focusSeconds: Number(sessionCount?.count ?? 0) > 0 ? sessionFocus : Number(savedSummary?.focus_seconds ?? 0),
       awaySeconds: Number(savedSummary?.away_seconds ?? 0),
-      questionsSolved: Math.max(Number(savedSummary?.questions_solved ?? 0), records.solved),
-      correctAnswers: Math.max(Number(savedSummary?.correct_answers ?? 0), records.correct),
-      wrongAnswers: Math.max(Number(savedSummary?.wrong_answers ?? 0), records.wrong),
+      questionsSolved: records.solved > 0 ? records.solved : Number(savedSummary?.questions_solved ?? 0),
+      correctAnswers: records.solved > 0 ? records.correct : Number(savedSummary?.correct_answers ?? 0),
+      wrongAnswers: records.solved > 0 ? records.wrong : Number(savedSummary?.wrong_answers ?? 0),
     },
   });
 }

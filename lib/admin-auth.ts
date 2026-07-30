@@ -38,7 +38,7 @@ export async function getAuthenticatedAdmin(request: Request, db: D1Database): P
   const row = await db.prepare(`SELECT a.id, a.login_id, a.display_name
     FROM admin_sessions s
     JOIN admin_users a ON a.id = s.admin_id
-    WHERE s.token_hash = ? AND s.expires_at > CURRENT_TIMESTAMP`)
+    WHERE s.token_hash = ? AND datetime(s.expires_at) > CURRENT_TIMESTAMP`)
     .bind(await hashToken(token)).first<{ id: string; login_id: string; display_name: string }>();
   return row ? { id: row.id, loginId: row.login_id, displayName: row.display_name } : null;
 }

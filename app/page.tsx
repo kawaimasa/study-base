@@ -132,6 +132,8 @@ const SUBJECT_PROGRESS_STORAGE_KEY = "study-base-subject-progress";
 const LOGIN_DAYS_STORAGE_KEY = "study-base-login-days";
 const REVIEW_QUEUE_STORAGE_KEY = "study-base-review-queue";
 const FREE_STUDY_SESSIONS_STORAGE_KEY = "study-base-free-study-sessions";
+const PRACTICE_DRAFT_STORAGE_KEY = "study-base-practice-draft";
+const PRACTICE_DRAFT_VERSION = 1;
 const QUESTIONS_PER_SUBJECT = 1000;
 const QUESTIONS_PER_SET = 20;
 const PRACTICE_TIMER_MAX_MINUTES = 15;
@@ -185,6 +187,13 @@ const DAILY_STREAK_MESSAGES = [
   "一歩ずつなら、どこまででも行ける。",
   "今日の挑戦に、拍手。",
 ] as const;
+
+function isValidPracticeQuestion(value: unknown): value is Question {
+  if (!value || typeof value !== "object") return false;
+  const question = value as Record<string, unknown>;
+  return ["id", "subject", "unit", "difficulty", "question", "answer", "explanation"]
+    .every((field) => typeof question[field] === "string" && String(question[field]).trim().length > 0);
+}
 
 function shuffleQuestions(questions: Question[]) {
   const shuffled = [...questions];
@@ -294,7 +303,8 @@ function practiceSeenQuestionKeyStorageKey(userId: string, subject: string) {
 
 function normalizeQuestionKey(value: string) {
   return value
-    .replace(/[\p{P}\p{S}\s]+/gu, " ")
+    .normalize("NFKC")
+    .replace(/\s+/g, " ")
     .trim()
     .toLowerCase();
 }
@@ -327,6 +337,18 @@ function writeSeenQuestionIds(userId: string, subject: string, ids: Iterable<str
   } catch {
     // Best-effort only.
   }
+}
+
+function writeSeenQuestionKeys(userId: string, subject: string, keys: Iterable<string>) {
+  try {
+    window.localStorage.setItem(practiceSeenQuestionKeyStorageKey(userId, subject), JSON.stringify([...new Set(keys)]));
+  } catch {
+    // Best-effort only. Authenticated history remains durable in D1.
+  }
+}
+
+function questionKey(question: Question) {
+  return normalizeQuestionKey(question.question);
 }
 
 function cleanQuestionText(text: string | undefined) {
@@ -548,6 +570,9 @@ export default function Home() {
   const stopwatchSecondsRef = useRef(0);
   const weeklyAwayStartedAtRef = useRef<number | null>(null);
   const weeklySubmittingRef = useRef(false);
+  const practiceDraftRestoredForRef = useRef<string | null>(null);
+  const practiceLoadInFlightRef = useRef(false);
+  const practiceSaveInFlightRef = useRef(false);
   const awayStatsRef = useRef<TodayAwayStats>({
     date: getLocalDateKey(),
     awaySeconds: 0,
@@ -609,8 +634,8 @@ export default function Home() {
       const data = await response.json() as { test: WeeklyTestData | null };
       setWeeklyTest(data.test);
       if (data.test?.submission) {
-        setWeeklyAnswers(data.test.submission.answers ?? {});
-        setWeeklyAwaySeconds(Number(data.test.submission.awaySeconds ?? 0));
+        setWeeklyAnswers((current) => Object.keys(current).length > 0 ? current : data.test!.submission!.answers ?? {});
+        setWeeklyAwaySeconds((current) => Math.max(current, Number(data.test!.submission!.awaySeconds ?? 0)));
         setWeeklyStarted(data.test.submission.status === "in_progress");
       }
       setWeeklyMessage("");
@@ -634,6 +659,7 @@ export default function Home() {
           return;
         }
         setAuthDisplayName(String(data.displayName ?? ""));
+        if (data.disabled) setAuthError("この生徒は停止中です。管理者に利用再開を依頼してください。");
         setAuthStatus(data.requiresSetup ? "setup" : "login");
       })
       .catch(() => {
@@ -828,7 +854,7 @@ export default function Home() {
       window.removeEventListener("pagehide", startAway);
       window.removeEventListener("pageshow", finishAwayPeriod);
     };
-  }, [authUser, jukuModeActive, sessionActive]);
+  }, [authUser, challengeMinutes, freeStudyAction, freeStudyPlan, jukuModeActive, selectedSubject, sessionActive, setNumber, timerMode, view]);
 
   useEffect(() => {
     const messageTimer = window.setInterval(() => setDailyMessageDate(getJstDateKey()), 60_000);
@@ -996,6 +1022,7 @@ export default function Home() {
           jukuAwayCount: Math.max(0, Number(parsedAway.jukuAwayCount ?? 0)),
           awayStartedAt: typeof parsedAway.awayStartedAt === "number" ? parsedAway.awayStartedAt : null,
           awayAtJuku: Boolean(parsedAway.awayAtJuku),
+          stateUpdatedAtMs: Math.max(0, Number(parsedAway.stateUpdatedAtMs ?? 0)),
         };
         window.localStorage.setItem(scopedKey, savedAway);
       }
@@ -1005,6 +1032,79 @@ export default function Home() {
       setAwayStatsLoaded(true);
     }
   }, [authUser]);
+
+  useEffect(() => {
+    if (!authUser || practiceDraftRestoredForRef.current === authUser.id) return;
+    practiceDraftRestoredForRef.current = authUser.id;
+    try {
+      const raw = window.localStorage.getItem(userStorageKey(PRACTICE_DRAFT_STORAGE_KEY, authUser.id));
+      if (!raw) return;
+      const draft = JSON.parse(raw) as Record<string, unknown>;
+      const storageKey = userStorageKey(PRACTICE_DRAFT_STORAGE_KEY, authUser.id);
+      if (draft.version !== PRACTICE_DRAFT_VERSION || Date.now() - Number(draft.savedAt ?? 0) > 24 * 60 * 60 * 1000) {
+        window.localStorage.removeItem(storageKey);
+        return;
+      }
+      const questions = Array.isArray(draft.questions) ? draft.questions : [];
+      const validQuestions = questions.filter(isValidPracticeQuestion);
+      const uniqueQuestionIds = new Set(validQuestions.map((question) => question.id));
+      if (
+        validQuestions.length !== QUESTIONS_PER_SET
+        || uniqueQuestionIds.size !== QUESTIONS_PER_SET
+        || typeof draft.selectedSubject !== "string"
+        || !validQuestions.every((question) => question.subject === draft.selectedSubject)
+      ) {
+        window.localStorage.removeItem(storageKey);
+        return;
+      }
+      setSelectedSubject(draft.selectedSubject as StudySubject);
+      setQuestionSequence(validQuestions);
+      setPracticeTotalSets(Math.max(1, Number(draft.totalSets ?? 1)));
+      setSetNumber(Math.max(1, Number(draft.setNumber ?? 1)));
+      setShuffleRound(Math.max(1, Number(draft.shuffleRound ?? 1)));
+      setPracticePhase(draft.phase === "review" ? "review" : "questions");
+      const savedGrades = Array.isArray(draft.grades) ? draft.grades : [];
+      setGrades(Array.from({ length: QUESTIONS_PER_SET }, (_, index) => savedGrades[index] === "correct" || savedGrades[index] === "wrong" ? savedGrades[index] : null));
+      setPracticeBatchId(typeof draft.batchId === "string" ? draft.batchId : crypto.randomUUID());
+      setSubjectTimerEnabled(Boolean(draft.timerEnabled));
+      setChallengeMinutes(Math.max(1, Math.min(PRACTICE_TIMER_MAX_MINUTES, Number(draft.challengeMinutes ?? PRACTICE_TIMER_DEFAULT_MINUTES))));
+      setSeconds(Math.max(0, Number(draft.seconds ?? 0)));
+      setRunning(Boolean(draft.running) && Number(draft.seconds ?? 0) > 0);
+      setView("practice");
+    } catch {
+      window.localStorage.removeItem(userStorageKey(PRACTICE_DRAFT_STORAGE_KEY, authUser.id));
+    }
+  }, [authUser]);
+
+  useEffect(() => {
+    if (!authUser || practiceDraftRestoredForRef.current !== authUser.id) return;
+    const storageKey = userStorageKey(PRACTICE_DRAFT_STORAGE_KEY, authUser.id);
+    if (practicePhase === "complete") {
+      window.localStorage.removeItem(storageKey);
+      return;
+    }
+    if (view !== "practice" || questionSequence.length !== QUESTIONS_PER_SET || !selectedSubject) return;
+    try {
+      window.localStorage.setItem(storageKey, JSON.stringify({
+        version: PRACTICE_DRAFT_VERSION,
+        savedAt: Date.now(),
+        selectedSubject,
+        questions: questionSequence,
+        totalSets: practiceTotalSets,
+        setNumber,
+        shuffleRound,
+        phase: practicePhase,
+        grades,
+        batchId: practiceBatchId,
+        timerEnabled: subjectTimerEnabled,
+        challengeMinutes,
+        seconds,
+        running,
+      }));
+    } catch {
+      // D1 still prevents repeats even if this browser cannot save a draft.
+    }
+  }, [authUser, challengeMinutes, grades, practiceBatchId, practicePhase, practiceTotalSets, questionSequence, running, seconds, selectedSubject, setNumber, shuffleRound, subjectTimerEnabled, view]);
 
   useEffect(() => {
     if (!authUser) return;
@@ -1040,9 +1140,8 @@ export default function Home() {
         const remoteQuestions = (Array.isArray(data.mistakes) ? data.mistakes : [])
           .map((item) => item.question as unknown as Question)
           .filter((question) => typeof question?.id === "string");
-        setReviewQueue((current) => {
-          const remoteIds = new Set(remoteQuestions.map((question) => question.id));
-          const next = [...remoteQuestions, ...current.filter((question) => !remoteIds.has(question.id))].slice(0, 50);
+        setReviewQueue(() => {
+          const next = remoteQuestions;
           try {
             window.localStorage.setItem(userStorageKey(REVIEW_QUEUE_STORAGE_KEY, authUser.id), JSON.stringify(next));
           } catch {
@@ -1081,6 +1180,10 @@ export default function Home() {
       .then((response) => response.ok ? response.json() : null)
       .then((data) => {
         if (data?.profile) setGuardianEnabled(Boolean(data.profile.enabled));
+        if (data?.summary && typeof data.summary === "object") {
+          const remoteFocusSeconds = Math.max(0, Number(data.summary.focusSeconds ?? 0));
+          setBaseTodayFocusSeconds((current) => Math.max(current, remoteFocusSeconds));
+        }
         if (!data?.away || typeof data.away !== "object") return;
         const remoteAway: TodayAwayStats = {
           date: getLocalDateKey(),
@@ -1094,6 +1197,8 @@ export default function Home() {
           awayAtJuku: Boolean(data.away.awayAtJuku),
           stateUpdatedAtMs: Math.max(0, Number(data.away.stateUpdatedAtMs ?? 0)),
         };
+        const localStateIsNewer = Number(awayStatsRef.current.stateUpdatedAtMs ?? 0) >= remoteAway.stateUpdatedAtMs!;
+        const newestState = localStateIsNewer ? awayStatsRef.current : remoteAway;
         const mergedAway: TodayAwayStats = {
           date: remoteAway.date,
           awaySeconds: Math.max(awayStatsRef.current.awaySeconds, remoteAway.awaySeconds),
@@ -1102,20 +1207,17 @@ export default function Home() {
           idleCount: Math.max(awayStatsRef.current.idleCount, remoteAway.idleCount),
           jukuAwaySeconds: Math.max(awayStatsRef.current.jukuAwaySeconds, remoteAway.jukuAwaySeconds),
           jukuAwayCount: Math.max(awayStatsRef.current.jukuAwayCount, remoteAway.jukuAwayCount),
-          awayStartedAt: Math.max(Number(awayStatsRef.current.awayStartedAt ?? 0), Number(remoteAway.awayStartedAt ?? 0)) || null,
-          awayAtJuku: Number(remoteAway.awayStartedAt ?? 0) >= Number(awayStatsRef.current.awayStartedAt ?? 0) ? remoteAway.awayAtJuku : awayStatsRef.current.awayAtJuku,
+          awayStartedAt: newestState.awayStartedAt ?? null,
+          awayAtJuku: Boolean(newestState.awayAtJuku),
           stateUpdatedAtMs: Math.max(Number(awayStatsRef.current.stateUpdatedAtMs ?? 0), Number(remoteAway.stateUpdatedAtMs ?? 0)),
         };
-        if (data?.summary && typeof data.summary === "object") {
-          const remoteFocusSeconds = Math.max(0, Number(data.summary.focusSeconds ?? 0));
-          setBaseTodayFocusSeconds((current) => Math.max(current, remoteFocusSeconds));
-        }
         if (mergedAway.awayStartedAt) {
           const elapsed = Math.max(1, Math.round((Date.now() - mergedAway.awayStartedAt) / 1000));
           if (mergedAway.awayAtJuku) mergedAway.jukuAwaySeconds += elapsed;
           else mergedAway.awaySeconds += elapsed;
           mergedAway.awayStartedAt = null;
           mergedAway.awayAtJuku = false;
+          mergedAway.stateUpdatedAtMs = Date.now();
         }
         awayStatsRef.current = mergedAway;
         setAwaySeconds(mergedAway.awaySeconds);
@@ -1271,7 +1373,7 @@ export default function Home() {
 
       const parsedQueue = JSON.parse(savedQueue) as Question[];
       if (Array.isArray(parsedQueue)) {
-        setReviewQueue(parsedQueue.filter((question) => typeof question?.id === "string").slice(0, 50));
+        setReviewQueue(parsedQueue.filter((question) => typeof question?.id === "string").slice(0, 500));
         window.localStorage.setItem(scopedKey, savedQueue);
       }
     } catch {
@@ -1346,8 +1448,8 @@ export default function Home() {
       student.id === authUser.id
         ? {
             ...student,
-            focusSeconds: reportFocusSeconds,
-            questionsSolved: todayTotal,
+            focusSeconds: Math.max(student.focusSeconds, reportFocusSeconds),
+            questionsSolved: Math.max(student.questionsSolved, todayTotal),
           }
         : student
     )));
@@ -1515,7 +1617,7 @@ export default function Home() {
       setReviewQueue((current) => {
         const missed = data.resultQuestions.filter((question) => !question.correct) as unknown as Question[];
         const missedIds = new Set(missed.map((question) => question.id));
-        const next = [...missed, ...current.filter((question) => !missedIds.has(question.id))].slice(0, 50);
+        const next = [...missed, ...current.filter((question) => !missedIds.has(question.id))].slice(0, 500);
         try { window.localStorage.setItem(userStorageKey(REVIEW_QUEUE_STORAGE_KEY, authUser.id), JSON.stringify(next)); } catch { /* Keep this session's queue. */ }
         return next;
       });
@@ -1767,6 +1869,11 @@ export default function Home() {
     if (excludeIds.length > 0) params.set("excludeIds", excludeIds.join(","));
     if (excludeKeys.length > 0) params.set("excludeKeys", excludeKeys.join(","));
     const response = await fetch(`/api/practice-questions?${params.toString()}`);
+    if (response.status === 401) {
+      setAuthUser(null);
+      setAuthStatus("login");
+      throw new Error("login required");
+    }
     if (!response.ok) throw new Error("question bank unavailable");
     return await response.json() as { questions: Question[]; totalSets: number; totalQuestions: number };
   };
@@ -1783,6 +1890,8 @@ export default function Home() {
   };
 
   const startSubjectPractice = async (subject: StudySubject, timerMinutes: number | null) => {
+    if (practiceLoadInFlightRef.current) return;
+    practiceLoadInFlightRef.current = true;
     setPracticeStartError("");
     setLoadingSubject(subject);
     try {
@@ -1815,15 +1924,18 @@ export default function Home() {
     } catch {
       setPracticeStartError("問題を読み込めませんでした。通信を確認して、もう一度押してください。");
     } finally {
+      practiceLoadInFlightRef.current = false;
       setLoadingSubject(null);
     }
   };
 
   const startNextSet = async () => {
+    if (practiceLoadInFlightRef.current) return;
     if (!selectedSubject) {
       setSubjectPickerOpen(true);
       return;
     }
+    practiceLoadInFlightRef.current = true;
     setSubjectTimerEnabled(false);
     setLoadingSubject(selectedSubject);
     try {
@@ -1843,12 +1955,14 @@ export default function Home() {
     } catch {
       setPracticeSaveError("次の20問を準備できませんでした。もう一度押してください。");
     } finally {
+      practiceLoadInFlightRef.current = false;
       setLoadingSubject(null);
     }
   };
 
   const completePractice = async () => {
-    if (!authUser || gradedCount !== QUESTIONS_PER_SET || activeQuestions.length !== QUESTIONS_PER_SET) return;
+    if (practiceSaveInFlightRef.current || !authUser || gradedCount !== QUESTIONS_PER_SET || activeQuestions.length !== QUESTIONS_PER_SET) return;
+    practiceSaveInFlightRef.current = true;
     const batchId = practiceBatchId || crypto.randomUUID();
     if (!practiceBatchId) setPracticeBatchId(batchId);
     setPracticeSaving(true);
@@ -1873,7 +1987,9 @@ export default function Home() {
         }),
       });
       if (!response.ok) throw new Error("practice save failed");
+      const saveResult = await response.json() as { duplicate?: boolean };
 
+      if (!saveResult.duplicate) {
       setReviewQueue((current) => {
       const missedQuestions = activeQuestions.filter((_, index) => grades[index] === "wrong");
       const missedIds = new Set(missedQuestions.map((question) => question.id));
@@ -1881,7 +1997,7 @@ export default function Home() {
       const nextQueue = [
         ...missedQuestions,
         ...current.filter((question) => !missedIds.has(question.id) && !correctIds.has(question.id)),
-      ].slice(0, 50);
+      ].slice(0, 500);
 
       try {
         if (authUser) window.localStorage.setItem(userStorageKey(REVIEW_QUEUE_STORAGE_KEY, authUser.id), JSON.stringify(nextQueue));
@@ -1910,11 +2026,45 @@ export default function Home() {
       return nextScore;
       });
       addSubjectProgress(activeQuestions);
+      }
+
+      // D1 is authoritative. This also repairs a browser that retried a batch
+      // after the server had already accepted it.
+      const snapshotResponse = await fetch("/api/study-records", { cache: "no-store" });
+      if (snapshotResponse.ok) {
+        const snapshot = await snapshotResponse.json() as {
+          today: string;
+          solved: number;
+          correct: number;
+          mistakes?: Array<{ question?: Record<string, unknown> }>;
+        };
+        const authoritativeScore = {
+          date: snapshot.today,
+          correct: Math.max(0, Number(snapshot.correct ?? 0)),
+          total: Math.max(0, Number(snapshot.solved ?? 0)),
+        };
+        setTodayScore(authoritativeScore);
+        try {
+          window.localStorage.setItem(userStorageKey(TODAY_SCORE_STORAGE_KEY, authUser.id), JSON.stringify(authoritativeScore));
+        } catch {
+          // D1 remains authoritative.
+        }
+        const authoritativeMistakes = (Array.isArray(snapshot.mistakes) ? snapshot.mistakes : [])
+          .map((item) => item.question as unknown as Question)
+          .filter(isValidPracticeQuestion);
+        setReviewQueue(authoritativeMistakes);
+        try {
+          window.localStorage.setItem(userStorageKey(REVIEW_QUEUE_STORAGE_KEY, authUser.id), JSON.stringify(authoritativeMistakes));
+        } catch {
+          // D1 remains authoritative.
+        }
+      }
       setPracticePhase("complete");
       window.scrollTo({ top: 0, behavior: "smooth" });
     } catch {
       setPracticeSaveError("採点結果を保存できませんでした。通信を確認して、もう一度押してください。");
     } finally {
+      practiceSaveInFlightRef.current = false;
       setPracticeSaving(false);
     }
   };
@@ -1987,7 +2137,7 @@ export default function Home() {
     }
     setReviewQueue((current) => {
       const remaining = current.filter((item) => item.id !== question.id);
-      const nextQueue = result === "again" ? [...remaining, question].slice(0, 50) : remaining;
+      const nextQueue = result === "again" ? [...remaining, question].slice(0, 500) : remaining;
       try {
         if (authUser) window.localStorage.setItem(userStorageKey(REVIEW_QUEUE_STORAGE_KEY, authUser.id), JSON.stringify(nextQueue));
       } catch {

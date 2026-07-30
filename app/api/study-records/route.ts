@@ -24,14 +24,14 @@ function toQuestion(value: unknown): StudyRecordQuestion {
   };
 }
 
-function toAttempt(value: unknown) {
+function toAttempt(value: unknown): { question: StudyRecordQuestion; result: AttemptResult; answerText: string; source: string } {
   if (!value || typeof value !== "object") throw new Error("attempt is required");
   const input = value as Record<string, unknown>;
   const result = input.result;
   if (result !== "correct" && result !== "wrong") throw new Error("attempt result must be correct or wrong");
   return {
     question: toQuestion(input.question),
-    result,
+    result: result as AttemptResult,
     answerText: typeof input.answer === "string" ? input.answer : "",
     source: typeof input.source === "string" ? input.source.slice(0, 50) : "practice",
   };
@@ -47,7 +47,7 @@ export async function GET(request: Request) {
     FROM mistake_notes
     WHERE student_id = ? AND status = 'active'
     ORDER BY last_wrong_at DESC
-    LIMIT 50`).bind(user.id).all<Record<string, unknown>>();
+    LIMIT 500`).bind(user.id).all<Record<string, unknown>>();
   return Response.json({
     ...snapshot,
     mistakes: results.map((row) => ({
@@ -65,7 +65,12 @@ export async function POST(request: Request) {
   const runtime = env as unknown as DeviceAuthEnv;
   const user = await getAuthenticatedDeviceUser(request, runtime.DB);
   if (!user) return Response.json({ error: "login required" }, { status: 401 });
-  const payload = await request.json() as Record<string, unknown>;
+  let payload: Record<string, unknown>;
+  try {
+    payload = await request.json() as Record<string, unknown>;
+  } catch {
+    return Response.json({ error: "JSON形式が正しくありません。" }, { status: 400 });
+  }
 
   try {
     if (payload.action === "attempt-batch") {

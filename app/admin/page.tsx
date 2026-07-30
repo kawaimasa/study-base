@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 
 type Admin = { id: string; loginId: string; displayName: string };
 type StudentRow = {
@@ -13,6 +14,7 @@ type StudentRow = {
   guardian_connected: number;
   pairing_code: string | null;
   notifications_enabled: number;
+  is_active: number;
 };
 type Dashboard = {
   today: string;
@@ -30,6 +32,7 @@ type WeeklyTestRow = {
   submission_count: number;
   completed_count: number;
   average_score: number;
+  phase: "開始前" | "実施中" | "終了";
 };
 type WeeklySubmissionRow = {
   test_id: string;
@@ -159,6 +162,26 @@ export default function AdminPage() {
     }
   };
 
+  const updateStudentStatus = async (studentId: string, active: boolean) => {
+    setSavingStudentId(studentId);
+    setDashboardMessage("");
+    try {
+      const response = await fetch("/api/admin-dashboard", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "student-status", studentId, active }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(String(data.error ?? "在籍状態を変更できませんでした。"));
+      await loadDashboard();
+      setDashboardMessage(active ? "生徒を利用中に戻しました。" : "生徒を停止しました。記録は削除されません。");
+    } catch (caught) {
+      setDashboardMessage(caught instanceof Error ? caught.message : "在籍状態を変更できませんでした。");
+    } finally {
+      setSavingStudentId(null);
+    }
+  };
+
   const createWeeklyTest = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setTestSaving(true);
@@ -207,7 +230,7 @@ export default function AdminPage() {
     return (
       <main className="admin-auth-page">
         <section className="auth-card admin-auth-card" aria-labelledby="admin-auth-title">
-          <a className="admin-back" href="/">← 生徒画面へ</a>
+          <Link className="admin-back" href="/">← 生徒画面へ</Link>
           <div className="auth-brand"><span className="brand-mark admin-mark">A</span><strong>STUDY BASE ADMIN</strong></div>
           {status === "loading" ? <div className="auth-loading" role="status"><span /><p>管理者情報を確認しています…</p></div> : <>
             <p className="eyebrow">ADMINISTRATOR ONLY</p>
@@ -232,7 +255,7 @@ export default function AdminPage() {
 
   return (
     <main className="admin-page">
-      <header className="admin-topbar"><a className="brand" href="/"><span className="brand-mark admin-mark">A</span><span>STUDY BASE ADMIN</span></a><div><span>{admin.displayName}</span><button onClick={() => void logout()}>ログアウト</button></div></header>
+      <header className="admin-topbar"><Link className="brand" href="/"><span className="brand-mark admin-mark">A</span><span>STUDY BASE ADMIN</span></Link><div><span>{admin.displayName}</span><button onClick={() => void logout()}>ログアウト</button></div></header>
       <div className="admin-shell">
         <section className="admin-heading"><div><p className="eyebrow">ADMIN DASHBOARD・{dashboard?.today ?? ""}</p><h1>学習状況を見守る</h1><p>生徒の今日の取り組みを、ひと目で確認できます。</p></div><button onClick={() => void Promise.all([loadDashboard(), loadWeeklyTests()])}>↻ 最新に更新</button></section>
         <section className="admin-stats" aria-label="今日の集計">
@@ -257,9 +280,7 @@ export default function AdminPage() {
               <h3>公開済みテスト</h3>
               {weeklyTests.length > 0 ? weeklyTests.map((test) => {
                 const start = new Date(test.starts_at);
-                const end = start.getTime() + Number(test.duration_minutes) * 60_000;
-                const now = Date.now();
-                const status = test.status === "cancelled" ? "中止" : now < start.getTime() ? "開始前" : now < end ? "実施中" : "終了";
+                const status = test.status === "cancelled" ? "中止" : test.phase;
                 return <article key={test.id} className={status === "実施中" ? "live" : ""}><div className="weekly-test-list-head"><span>{status}</span><strong>{test.title}</strong></div><p>{start.toLocaleString("ja-JP", { timeZone: "Asia/Tokyo", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}開始・{test.duration_minutes}分・{test.question_count}問</p><small>{test.subjects.join("・")}</small><div className="weekly-result-mini"><span>提出 <strong>{Number(test.completed_count)}人</strong></span><span>平均 <strong>{Math.round(Number(test.average_score))}%</strong></span></div>{status === "開始前" && <button onClick={() => void cancelWeeklyTest(test.id)}>中止する</button>}</article>;
               }) : <div className="weekly-test-empty">まだテストはありません。</div>}
             </div>
@@ -286,6 +307,18 @@ export default function AdminPage() {
             {dashboardMessage && <em role="status">{dashboardMessage}</em>}
           </div>
           <div className="admin-table-wrap">
+            <div className="admin-student-status-list" aria-label="生徒の利用状態">
+              {(dashboard?.students ?? []).map((student) => (
+                <button
+                  key={`status-${student.id}`}
+                  className={`admin-line-toggle${student.is_active ? " enabled" : ""}`}
+                  disabled={savingStudentId === student.id}
+                  onClick={() => void updateStudentStatus(student.id, !Boolean(student.is_active))}
+                >
+                  {student.display_name}：{student.is_active ? "利用中" : "停止中"}
+                </button>
+              ))}
+            </div>
             <table><thead><tr><th>生徒</th><th>集中時間</th><th>問題数</th><th>正答率</th><th>接続状況</th><th>朝7時通知</th><th>連携コード</th></tr></thead><tbody>
               {(dashboard?.students ?? []).map((student) => {
                 const studentAccuracy = Number(student.questions_solved) > 0 ? Math.round(Number(student.correct_answers) / Number(student.questions_solved) * 100) : 0;

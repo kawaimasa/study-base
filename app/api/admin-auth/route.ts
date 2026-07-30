@@ -20,7 +20,12 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   const runtime = env as unknown as DeviceAuthEnv;
   await ensureAdminAuthTables(runtime.DB);
-  const payload = await request.json() as { action?: "setup" | "login" | "logout"; loginId?: string; displayName?: string; pin?: string };
+  let payload: { action?: "setup" | "login" | "logout"; loginId?: string; displayName?: string; pin?: string };
+  try {
+    payload = await request.json() as typeof payload;
+  } catch {
+    return Response.json({ error: "JSON形式が正しくありません。" }, { status: 400 });
+  }
 
   if (payload.action === "logout") {
     const token = parseCookies(request).get(ADMIN_SESSION_COOKIE);
@@ -42,8 +47,10 @@ export async function POST(request: Request) {
     if (displayName.length < 1 || displayName.length > 20) return Response.json({ error: "管理者名は1〜20文字で入力してください。" }, { status: 400 });
     const adminId = `admin-${crypto.randomUUID()}`;
     const salt = createSalt();
-    await runtime.DB.prepare("INSERT INTO admin_users (id, login_id, display_name, pin_salt, pin_hash) VALUES (?, ?, ?, ?, ?)")
+    const inserted = await runtime.DB.prepare(`INSERT INTO admin_users (id, login_id, display_name, pin_salt, pin_hash)
+      SELECT ?, ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM admin_users)`)
       .bind(adminId, loginId, displayName, salt, await hashPin(pin, salt)).run();
+    if (!inserted.meta.changes) return Response.json({ error: "管理者はすでに登録されています。" }, { status: 409 });
     const session = await createAdminSession(runtime.DB, adminId);
     return new Response(JSON.stringify({ authenticated: true, admin: { id: adminId, loginId, displayName } }), {
       headers: { "Content-Type": "application/json", "Set-Cookie": adminSessionCookie(session, request) },

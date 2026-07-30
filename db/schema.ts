@@ -5,6 +5,8 @@ export const guardianProfiles = sqliteTable("guardian_profiles", {
   studentId: text("student_id").primaryKey(),
   studentName: text("student_name").notNull(),
   pairingCode: text("pairing_code").notNull().unique(),
+  pairingExpiresAt: text("pairing_expires_at"),
+  pairingUsedAt: text("pairing_used_at"),
   parentLineUserId: text("parent_line_user_id"),
   notificationsEnabled: integer("notifications_enabled", { mode: "boolean" }).notNull().default(false),
   parentConsentAt: text("parent_consent_at"),
@@ -152,6 +154,7 @@ export const deviceUsers = sqliteTable("device_users", {
   pinHash: text("pin_hash").notNull(),
   failedAttempts: integer("failed_attempts").notNull().default(0),
   lockedUntil: text("locked_until"),
+  isActive: integer("is_active", { mode: "boolean" }).notNull().default(true),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });

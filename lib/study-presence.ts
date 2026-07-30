@@ -80,7 +80,10 @@ export async function saveStudyPresence(db: D1Database, studentId: string, input
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
       ON CONFLICT(student_id) DO UPDATE SET
         session_id = excluded.session_id,
-        status = excluded.status,
+        status = CASE
+          WHEN study_presence.session_id = excluded.session_id AND study_presence.status = 'stopped' THEN 'stopped'
+          ELSE excluded.status
+        END,
         mode = excluded.mode,
         subject = excluded.subject,
         detail = excluded.detail,
@@ -93,7 +96,9 @@ export async function saveStudyPresence(db: D1Database, studentId: string, input
           ELSE excluded.active_seconds
         END,
         last_seen_at_ms = excluded.last_seen_at_ms,
-        updated_at = CURRENT_TIMESTAMP`)
+        updated_at = CURRENT_TIMESTAMP
+      WHERE study_presence.session_id = excluded.session_id
+         OR excluded.started_at_ms >= study_presence.started_at_ms`)
       .bind(studentId, presence.sessionId, presence.status, presence.mode, presence.subject, presence.detail, startedAt, presence.activeSeconds, now),
     db.prepare(`INSERT INTO study_session_totals
       (student_id, session_id, summary_date, status, mode, subject, is_juku, active_seconds, started_at_ms, last_seen_at_ms, updated_at)

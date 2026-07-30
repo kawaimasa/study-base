@@ -34,10 +34,16 @@ export async function GET(request: Request) {
     JOIN weekly_tests t ON t.id = s.test_id
     JOIN device_users u ON u.id = s.student_id
     ORDER BY COALESCE(s.submitted_at, s.started_at) DESC LIMIT 200`).all<Record<string, unknown>>();
-  return Response.json({ serverNow: new Date().toISOString(), submissions, tests: results.map((row) => ({
-    ...row,
-    subjects: JSON.parse(String(row.subjects_json ?? "[]")),
-  })) });
+  const now = Date.now();
+  return Response.json({ serverNow: new Date(now).toISOString(), submissions, tests: results.map((row) => {
+    const start = new Date(String(row.starts_at)).getTime();
+    const end = start + Number(row.duration_minutes) * 60_000;
+    return {
+      ...row,
+      subjects: safeJson<string[]>(row.subjects_json, []),
+      phase: now < start ? "開始前" : now < end ? "実施中" : "終了",
+    };
+  }) });
 }
 
 export async function POST(request: Request) {
@@ -45,7 +51,7 @@ export async function POST(request: Request) {
   const admin = await getAuthenticatedAdmin(request, runtime.DB);
   if (!admin) return Response.json({ error: "admin login required" }, { status: 401 });
   await ensureWeeklyTestTables(runtime.DB);
-  const payload = await request.json() as {
+  let payload: {
     action?: "create" | "cancel";
     testId?: string;
     title?: string;
@@ -54,6 +60,11 @@ export async function POST(request: Request) {
     questionCount?: number;
     subjects?: string[];
   };
+  try {
+    payload = await request.json() as typeof payload;
+  } catch {
+    return Response.json({ error: "JSON形式が正しくありません。" }, { status: 400 });
+  }
 
   if (payload.action === "cancel" && payload.testId) {
     await runtime.DB.prepare("UPDATE weekly_tests SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP WHERE id = ?")

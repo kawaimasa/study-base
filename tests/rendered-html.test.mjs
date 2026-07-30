@@ -60,8 +60,8 @@ test("ranking is calculated from durable student records", async () => {
   assert.doesNotMatch(page, /昨日より 1 UP/);
   assert.match(page, /\/api\/rankings\?period=/);
   assert.match(page, /myRanking\?\.rank/);
-  assert.match(rankingsRoute, /SUM\(MAX\(COALESCE\(s\.focus_seconds/);
-  assert.match(rankingsRoute, /SUM\(MAX\(COALESCE\(s\.questions_solved/);
+  assert.match(rankingsRoute, /SUM\(CASE WHEN sf\.student_id IS NOT NULL/);
+  assert.match(rankingsRoute, /SUM\(CASE WHEN a\.student_id IS NOT NULL/);
   assert.match(rankingsRoute, /study_session_totals/);
   assert.match(rankingsRoute, /practice_attempts/);
   assert.match(rankingsRoute, /FROM device_users u/);
@@ -83,6 +83,8 @@ test("practice grading and mistake reviews are persisted idempotently in D1", as
   assert.match(page, /"mistake-review"/);
   assert.match(recordsRoute, /recordPracticeAttemptBatch/);
   assert.match(recordsHelper, /practice_attempt_batches/);
+  assert.doesNotMatch(recordsHelper, /question_deliveries[\s\S]{0,160}question_json/);
+  assert.doesNotMatch(recordsHelper, /delivered_count/);
   assert.match(recordsHelper, /date\(attempted_at, '\+9 hours'\)/);
   assert.match(schema, /practiceAttemptBatches/);
 });
@@ -118,4 +120,34 @@ test("focus, leave and juku time survive navigation without inflating verified s
   assert.match(guardianRoute, /MAX\(daily_summaries\.focus_seconds, excluded\.focus_seconds\)/);
   assert.match(guardianRoute, /state_updated_at_ms >= daily_away_stats\.state_updated_at_ms/);
   assert.match(guardianHelper, /state_updated_at_ms INTEGER NOT NULL DEFAULT 0/);
+});
+
+test("practice drafts, active students and protected weekly tests survive real usage", async () => {
+  const [page, deviceRoute, weeklyRoute, lineRoute, adminRoute, guardianHelper] = await Promise.all([
+    readFile(new URL("app/page.tsx", root), "utf8"),
+    readFile(new URL("app/api/device-auth/route.ts", root), "utf8"),
+    readFile(new URL("app/api/weekly-tests/route.ts", root), "utf8"),
+    readFile(new URL("app/api/line-webhook/route.ts", root), "utf8"),
+    readFile(new URL("app/api/admin-dashboard/route.ts", root), "utf8"),
+    readFile(new URL("lib/guardian-reports.ts", root), "utf8"),
+  ]);
+
+  assert.match(page, /PRACTICE_DRAFT_STORAGE_KEY/);
+  assert.match(page, /PRACTICE_DRAFT_VERSION/);
+  assert.match(page, /function writeSeenQuestionKeys/);
+  assert.match(page, /function questionKey\(question: Question\)/);
+  assert.match(page, /practiceSaveInFlightRef/);
+  assert.match(page, /if \(!saveResult\.duplicate\)/);
+  assert.match(page, /questions\.length !== QUESTIONS_PER_SET/);
+  assert.match(page, /practiceLoadInFlightRef/);
+  assert.match(deviceRoute, /WHERE is_active = 1/);
+  assert.match(deviceRoute, /この生徒は停止中です/);
+  assert.match(weeklyRoute, /if \(now >= end\)/);
+  assert.match(weeklyRoute, /existing\?\.status !== "in_progress"/);
+  assert.match(lineRoute, /pairing_used_at IS NULL/);
+  assert.match(lineRoute, /datetime\(pairing_expires_at\) > CURRENT_TIMESTAMP/);
+  assert.match(adminRoute, /action === "student-status"/);
+  assert.match(guardianHelper, /INNER JOIN device_users u ON u\.id = p\.student_id AND u\.is_active = 1/);
+  assert.match(guardianHelper, /ensureStudyPresenceTable\(env\.DB\)/);
+  assert.match(guardianHelper, /ensureStudyRecordTables\(env\.DB\)/);
 });

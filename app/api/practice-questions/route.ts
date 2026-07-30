@@ -56,7 +56,8 @@ function seededShuffle<T>(items: T[], seedText: string) {
 
 function questionKey(question: PracticeQuestion) {
   return question.question
-    .replace(/[\p{P}\p{S}\s]+/gu, " ")
+    .normalize("NFKC")
+    .replace(/\s+/g, " ")
     .trim()
     .toLowerCase();
 }
@@ -194,6 +195,7 @@ export async function GET(request: Request) {
   const mode = url.searchParams.get("mode");
   const runtime = env as unknown as DeviceAuthEnv;
   const user = await getAuthenticatedDeviceUser(request, runtime.DB);
+  if (!user) return Response.json({ error: "login required" }, { status: 401 });
   const excludeIds = new Set(
     (url.searchParams.get("excludeIds") ?? "")
       .split(",")
@@ -222,7 +224,7 @@ export async function GET(request: Request) {
 
   // Every request gets a new order. D1 exclusions guarantee that randomizing
   // cannot bring back a question this student has already seen.
-  const randomSeed = `${round}:${user?.id ?? "anonymous"}:${crypto.randomUUID()}`;
+  const randomSeed = `${round}:${user.id}:${crypto.randomUUID()}`;
 
   const source = mode === "focus"
     ? level55Ordered(questionBank.filter((question) => question.difficulty === "入試基礎"), `focus:${randomSeed}`)

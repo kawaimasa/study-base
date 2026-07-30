@@ -50,19 +50,25 @@ export async function GET(request: Request) {
   const deviceToken = parseCookies(request).get(DEVICE_COOKIE);
   if (!deviceToken) return Response.json({ authenticated: false, requiresSetup: true });
   const deviceHash = await hashToken(deviceToken);
-  const profile = await runtime.DB.prepare("SELECT display_name FROM device_users WHERE device_token_hash = ?")
-    .bind(deviceHash).first<{ display_name: string }>();
+  const profile = await runtime.DB.prepare("SELECT display_name, is_active FROM device_users WHERE device_token_hash = ?")
+    .bind(deviceHash).first<{ display_name: string; is_active: number }>();
   return Response.json({
     authenticated: false,
     requiresSetup: !profile,
     displayName: profile?.display_name ?? null,
+    disabled: profile ? !Boolean(profile.is_active) : false,
   });
 }
 
 export async function POST(request: Request) {
   const runtime = env as unknown as DeviceAuthEnv;
   await ensureDeviceAuthTables(runtime.DB);
-  const payload = await request.json() as { action?: "register" | "login" | "logout"; displayName?: string; pin?: string };
+  let payload: { action?: "register" | "login" | "logout"; displayName?: string; pin?: string };
+  try {
+    payload = await request.json() as typeof payload;
+  } catch {
+    return Response.json({ error: "JSON形式が正しくありません。" }, { status: 400 });
+  }
 
   if (payload.action === "logout") {
     const sessionToken = parseCookies(request).get(SESSION_COOKIE);
@@ -84,15 +90,23 @@ export async function POST(request: Request) {
     const deviceToken = cookies.get(DEVICE_COOKIE) ?? createToken();
     const deviceHash = await hashToken(deviceToken);
     const existing = await runtime.DB.prepare("SELECT id FROM device_users WHERE device_token_hash = ?").bind(deviceHash).first();
+    const capacity = await runtime.DB.prepare("SELECT COUNT(*) AS count FROM device_users WHERE is_active = 1")
+      .first<{ count: number }>();
+    if (!existing && Number(capacity?.count ?? 0) >= 6) {
+      return Response.json({ error: "利用できる生徒は6人までです。管理者に確認してください。" }, { status: 409 });
+    }
     if (existing) return Response.json({ error: "この端末にはすでに利用者が登録されています。" }, { status: 409 });
 
     const userId = `student-${crypto.randomUUID()}`;
     const pinSalt = createSalt();
     const pinHash = await hashPin(pin, pinSalt);
-    await runtime.DB.prepare(`INSERT INTO device_users
+    const inserted = await runtime.DB.prepare(`INSERT INTO device_users
       (id, display_name, device_token_hash, pin_salt, pin_hash)
-      VALUES (?, ?, ?, ?, ?)`)
+      SELECT ?, ?, ?, ?, ? WHERE (SELECT COUNT(*) FROM device_users WHERE is_active = 1) < 6`)
       .bind(userId, displayName, deviceHash, pinSalt, pinHash).run();
+    if (!inserted.meta.changes) {
+      return Response.json({ error: "利用できる生徒は6人までです。管理者に確認してください。" }, { status: 409 });
+    }
     await recordStudentLogin(runtime.DB, userId);
     const sessionToken = await startSession(runtime.DB, userId);
     return jsonWithCookies({ authenticated: true, user: { id: userId, displayName } }, request, [
@@ -105,10 +119,11 @@ export async function POST(request: Request) {
     const deviceToken = cookies.get(DEVICE_COOKIE);
     if (!deviceToken) return Response.json({ error: "この端末は未登録です。初回登録から始めてください。" }, { status: 404 });
     const deviceHash = await hashToken(deviceToken);
-    const profile = await runtime.DB.prepare(`SELECT id, display_name, pin_salt, pin_hash, failed_attempts, locked_until
+    const profile = await runtime.DB.prepare(`SELECT id, display_name, pin_salt, pin_hash, failed_attempts, locked_until, is_active
       FROM device_users WHERE device_token_hash = ?`)
       .bind(deviceHash).first<Record<string, string | number | null>>();
     if (!profile) return Response.json({ error: "この端末の登録情報が見つかりません。" }, { status: 404 });
+    if (!Boolean(profile.is_active)) return Response.json({ error: "この生徒は停止中です。管理者に利用再開を依頼してください。" }, { status: 403 });
 
     if (profile.locked_until && new Date(String(profile.locked_until)).getTime() > Date.now()) {
       return Response.json({ error: "PINを続けて間違えたため、5分後にもう一度試してください。" }, { status: 429 });

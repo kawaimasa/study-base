@@ -57,8 +57,8 @@ export async function GET(request: Request) {
       SELECT student_id, summary_date FROM attempt_daily
     ), totals AS (
       SELECT d.student_id,
-        COALESCE(SUM(MAX(COALESCE(s.focus_seconds, 0), COALESCE(sf.focus_seconds, 0))), 0) AS focus_seconds,
-        COALESCE(SUM(MAX(COALESCE(s.questions_solved, 0), COALESCE(a.questions_solved, 0))), 0) AS questions_solved
+        COALESCE(SUM(CASE WHEN sf.student_id IS NOT NULL THEN COALESCE(sf.focus_seconds, 0) ELSE COALESCE(s.focus_seconds, 0) END), 0) AS focus_seconds,
+        COALESCE(SUM(CASE WHEN a.student_id IS NOT NULL THEN COALESCE(a.questions_solved, 0) ELSE COALESCE(s.questions_solved, 0) END), 0) AS questions_solved
       FROM days d
       LEFT JOIN daily_summaries s ON s.student_id = d.student_id AND s.summary_date = d.summary_date
       LEFT JOIN session_daily sf ON sf.student_id = d.student_id AND sf.summary_date = d.summary_date
@@ -70,6 +70,7 @@ export async function GET(request: Request) {
       COALESCE(totals.questions_solved, 0) AS questions_solved
     FROM device_users u
     LEFT JOIN totals ON totals.student_id = u.id
+    WHERE u.is_active = 1
     ORDER BY COALESCE(totals.focus_seconds, 0) DESC,
       COALESCE(totals.questions_solved, 0) DESC,
       u.display_name ASC,

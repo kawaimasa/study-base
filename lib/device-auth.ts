@@ -77,6 +77,7 @@ export async function ensureDeviceAuthTables(db: D1Database) {
       pin_hash TEXT NOT NULL,
       failed_attempts INTEGER NOT NULL DEFAULT 0,
       locked_until TEXT,
+      is_active INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )`),
@@ -88,6 +89,14 @@ export async function ensureDeviceAuthTables(db: D1Database) {
     )`),
     db.prepare("CREATE INDEX IF NOT EXISTS device_sessions_user_idx ON device_sessions(user_id)"),
   ]);
+  const columns = await db.prepare("PRAGMA table_info(device_users)").all<{ name: string }>();
+  if (!(columns.results ?? []).some((column) => column.name === "is_active")) {
+    try {
+      await db.prepare("ALTER TABLE device_users ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1").run();
+    } catch {
+      // Another request or a deployment migration may have added it first.
+    }
+  }
 }
 
 export async function getAuthenticatedDeviceUser(request: Request, db: D1Database): Promise<DeviceUser | null> {
@@ -98,7 +107,7 @@ export async function getAuthenticatedDeviceUser(request: Request, db: D1Databas
   const row = await db.prepare(`SELECT u.id, u.display_name
     FROM device_sessions s
     JOIN device_users u ON u.id = s.user_id
-    WHERE s.token_hash = ? AND s.expires_at > CURRENT_TIMESTAMP`)
+    WHERE s.token_hash = ? AND datetime(s.expires_at) > CURRENT_TIMESTAMP AND u.is_active = 1`)
     .bind(sessionHash).first<{ id: string; display_name: string }>();
   return row ? { id: row.id, displayName: row.display_name } : null;
 }

@@ -30,8 +30,8 @@ export async function GET(request: Request) {
       u.id,
       u.display_name,
       u.created_at,
-      MAX(COALESCE(s.focus_seconds, 0), COALESCE(sf.focus_seconds, 0)) AS focus_seconds,
-      MAX(COALESCE(s.questions_solved, 0), COALESCE(a.questions_solved, 0)) AS questions_solved,
+      CASE WHEN sf.student_id IS NOT NULL THEN COALESCE(sf.focus_seconds, 0) ELSE COALESCE(s.focus_seconds, 0) END AS focus_seconds,
+      CASE WHEN a.student_id IS NOT NULL THEN COALESCE(a.questions_solved, 0) ELSE COALESCE(s.questions_solved, 0) END AS questions_solved,
       p.status AS presence_status,
       p.mode AS presence_mode,
       p.subject AS presence_subject,
@@ -44,14 +44,15 @@ export async function GET(request: Request) {
     LEFT JOIN session_focus sf ON sf.student_id = u.id
     LEFT JOIN attempts a ON a.student_id = u.id
     LEFT JOIN study_presence p ON p.student_id = u.id
+    WHERE u.is_active = 1
     ORDER BY
       CASE WHEN p.status = 'studying' AND p.last_seen_at_ms >= ? THEN 0
            WHEN p.status = 'away' AND p.last_seen_at_ms >= ? THEN 1
-           WHEN MAX(COALESCE(s.focus_seconds, 0), COALESCE(sf.focus_seconds, 0)) > 0
-             OR MAX(COALESCE(s.questions_solved, 0), COALESCE(a.questions_solved, 0)) > 0 THEN 2
+           WHEN (CASE WHEN sf.student_id IS NOT NULL THEN COALESCE(sf.focus_seconds, 0) ELSE COALESCE(s.focus_seconds, 0) END) > 0
+             OR (CASE WHEN a.student_id IS NOT NULL THEN COALESCE(a.questions_solved, 0) ELSE COALESCE(s.questions_solved, 0) END) > 0 THEN 2
            ELSE 3 END,
       CASE WHEN u.id = ? THEN 0 ELSE 1 END,
-      MAX(COALESCE(s.focus_seconds, 0), COALESCE(sf.focus_seconds, 0)) DESC,
+      (CASE WHEN sf.student_id IS NOT NULL THEN COALESCE(sf.focus_seconds, 0) ELSE COALESCE(s.focus_seconds, 0) END) DESC,
       u.created_at DESC
     LIMIT 100`)
     .bind(today, today, today, liveAfterMs, liveAfterMs, user.id)

@@ -102,12 +102,14 @@ export async function recordQuestionDeliveries(db: D1Database, studentId: string
     unique.set(question.key, question);
   }
   if (unique.size === 0) return;
-  await db.batch([...unique.values()].map((question) => db.prepare(`INSERT INTO question_deliveries
-      (student_id, question_id, question_key, subject)
-      VALUES (?, ?, ?, ?)
-      ON CONFLICT(student_id, question_key) DO UPDATE SET
-        last_delivered_at = CURRENT_TIMESTAMP`)
-    .bind(studentId, question.id, question.key, question.subject)));
+  await db.batch([...unique.values()].flatMap((question) => [
+    db.prepare(`INSERT OR IGNORE INTO question_deliveries
+      (student_id, question_id, question_key, subject) VALUES (?, ?, ?, ?)`)
+      .bind(studentId, question.id, question.key, question.subject),
+    db.prepare(`UPDATE question_deliveries SET last_delivered_at = CURRENT_TIMESTAMP
+      WHERE student_id = ? AND (question_id = ? OR question_key = ?)`)
+      .bind(studentId, question.id, question.key),
+  ]));
 }
 
 export async function recordPracticeAttempt(
@@ -157,16 +159,13 @@ function buildAttemptStatements(db: D1Database, studentId: string, attempt: Prac
   assertQuestion(question);
   if (result !== "correct" && result !== "wrong") throw new Error("invalid grading result");
   const statements = [
-    db.prepare(`INSERT INTO question_deliveries
-      (student_id, question_id, question_key, subject, question_json, delivered_count, first_delivered_at, last_delivered_at)
-      VALUES (?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-      ON CONFLICT(student_id, question_key) DO UPDATE SET
-        question_id = excluded.question_id,
-        subject = excluded.subject,
-        question_json = excluded.question_json,
-        delivered_count = question_deliveries.delivered_count + 1,
-        last_delivered_at = CURRENT_TIMESTAMP`)
-      .bind(studentId, question.id, question.key, question.subject, JSON.stringify(question.payload)),
+    db.prepare(`INSERT OR IGNORE INTO question_deliveries
+      (student_id, question_id, question_key, subject, first_delivered_at, last_delivered_at)
+      VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`)
+      .bind(studentId, question.id, question.key, question.subject),
+    db.prepare(`UPDATE question_deliveries SET last_delivered_at = CURRENT_TIMESTAMP
+      WHERE student_id = ? AND (question_id = ? OR question_key = ?)`)
+      .bind(studentId, question.id, question.key),
     db.prepare(`INSERT INTO practice_attempts
       (student_id, question_id, question_key, subject, answer_text, result, source)
       VALUES (?, ?, ?, ?, ?, ?, ?)`)

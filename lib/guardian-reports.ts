@@ -1,3 +1,7 @@
+import { ensureDeviceAuthTables } from "./device-auth";
+import { ensureStudyPresenceTable } from "./study-presence";
+import { ensureStudyRecordTables } from "./study-records";
+
 export interface GuardianReportEnv {
   DB: D1Database;
   LINE_CHANNEL_ACCESS_TOKEN?: string;
@@ -31,6 +35,8 @@ export async function ensureGuardianReportTables(db: D1Database) {
       student_id TEXT PRIMARY KEY,
       student_name TEXT NOT NULL,
       pairing_code TEXT NOT NULL UNIQUE,
+      pairing_expires_at TEXT,
+      pairing_used_at TEXT,
       parent_line_user_id TEXT,
       notifications_enabled INTEGER NOT NULL DEFAULT 0,
       parent_consent_at TEXT,
@@ -79,6 +85,21 @@ export async function ensureGuardianReportTables(db: D1Database) {
   } catch {
     // The column already exists on new or previously migrated databases.
   }
+  const profileColumns = await db.prepare("PRAGMA table_info(guardian_profiles)").all<{ name: string }>();
+  if (!(profileColumns.results ?? []).some((column) => column.name === "pairing_expires_at")) {
+    try {
+      await db.prepare("ALTER TABLE guardian_profiles ADD COLUMN pairing_expires_at TEXT").run();
+    } catch {
+      // Another request or a deployment migration may have added it first.
+    }
+  }
+  if (!(profileColumns.results ?? []).some((column) => column.name === "pairing_used_at")) {
+    try {
+      await db.prepare("ALTER TABLE guardian_profiles ADD COLUMN pairing_used_at TEXT").run();
+    } catch {
+      // Another request or a deployment migration may have added it first.
+    }
+  }
 }
 
 export function jstDateKey(timestamp = Date.now(), dayOffset = 0) {
@@ -126,25 +147,44 @@ async function sendLinePush(token: string, userId: string, text: string) {
 }
 
 export async function sendMorningGuardianReports(env: GuardianReportEnv, scheduledTime = Date.now()) {
+  // Scheduled jobs can be the first request after a fresh deployment. Ensure
+  // every table used below exists before the report query runs.
+  await ensureDeviceAuthTables(env.DB);
   await ensureGuardianReportTables(env.DB);
+  await ensureStudyPresenceTable(env.DB);
+  await ensureStudyRecordTables(env.DB);
   const summaryDate = jstDateKey(scheduledTime, -1);
-  const { results = [] } = await env.DB.prepare(`
+  const { results = [] } = await env.DB.prepare(`WITH verified_focus AS (
+      SELECT student_id, SUM(active_seconds) AS focus_seconds
+      FROM study_session_totals WHERE summary_date = ? AND is_juku = 0 GROUP BY student_id
+    ), verified_attempts AS (
+      SELECT student_id, COUNT(*) AS questions_solved,
+        SUM(CASE WHEN result = 'correct' THEN 1 ELSE 0 END) AS correct_answers
+      FROM practice_attempts WHERE date(attempted_at, '+9 hours') = ? GROUP BY student_id
+    ), verified_away AS (
+      SELECT student_id, away_seconds + idle_seconds AS away_seconds
+      FROM daily_away_stats WHERE summary_date = ?
+    )
     SELECT p.student_id, p.student_name, p.parent_line_user_id,
       COALESCE(s.summary_date, ?) AS summary_date,
-      COALESCE(s.focus_seconds, 0) AS focus_seconds,
-      COALESCE(s.away_seconds, 0) AS away_seconds,
-      COALESCE(s.questions_solved, 0) AS questions_solved,
-      COALESCE(s.correct_answers, 0) AS correct_answers,
-      COALESCE(s.wrong_answers, 0) AS wrong_answers
+      CASE WHEN vf.student_id IS NOT NULL THEN COALESCE(vf.focus_seconds, 0) ELSE COALESCE(s.focus_seconds, 0) END AS focus_seconds,
+      CASE WHEN va.student_id IS NOT NULL THEN COALESCE(va.away_seconds, 0) ELSE COALESCE(s.away_seconds, 0) END AS away_seconds,
+      CASE WHEN vt.student_id IS NOT NULL THEN COALESCE(vt.questions_solved, 0) ELSE COALESCE(s.questions_solved, 0) END AS questions_solved,
+      CASE WHEN vt.student_id IS NOT NULL THEN COALESCE(vt.correct_answers, 0) ELSE COALESCE(s.correct_answers, 0) END AS correct_answers,
+      CASE WHEN vt.student_id IS NOT NULL THEN COALESCE(vt.questions_solved, 0) - COALESCE(vt.correct_answers, 0) ELSE COALESCE(s.wrong_answers, 0) END AS wrong_answers
     FROM guardian_profiles p
+    INNER JOIN device_users u ON u.id = p.student_id AND u.is_active = 1
     LEFT JOIN daily_summaries s ON s.student_id = p.student_id AND s.summary_date = ?
+    LEFT JOIN verified_focus vf ON vf.student_id = p.student_id
+    LEFT JOIN verified_attempts vt ON vt.student_id = p.student_id
+    LEFT JOIN verified_away va ON va.student_id = p.student_id
     LEFT JOIN guardian_notification_logs l
       ON l.student_id = p.student_id AND l.summary_date = ?
     WHERE p.notifications_enabled = 1
       AND p.parent_consent_at IS NOT NULL
       AND p.parent_line_user_id IS NOT NULL
       AND (l.id IS NULL OR l.status = 'failed')
-  `).bind(summaryDate, summaryDate, summaryDate).all<Record<string, unknown>>();
+  `).bind(summaryDate, summaryDate, summaryDate, summaryDate, summaryDate, summaryDate).all<Record<string, unknown>>();
 
   for (const row of results) {
     const studentId = String(row.student_id);

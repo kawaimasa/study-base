@@ -6,7 +6,12 @@ export async function POST(request: Request) {
   const runtime = env as unknown as DeviceAuthEnv;
   const user = await getAuthenticatedDeviceUser(request, runtime.DB);
   if (!user) return Response.json({ error: "login required" }, { status: 401 });
-  const payload = await request.json() as Record<string, unknown>;
+  let payload: Record<string, unknown>;
+  try {
+    payload = await request.json() as Record<string, unknown>;
+  } catch {
+    return Response.json({ error: "JSON形式が正しくありません。" }, { status: 400 });
+  }
   try {
     const presence = await saveStudyPresence(runtime.DB, user.id, payload);
     return Response.json({ saved: true, presence });

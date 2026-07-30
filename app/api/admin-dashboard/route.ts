@@ -30,11 +30,12 @@ export async function GET(request: Request) {
       u.id,
       u.display_name,
       u.created_at,
-      MAX(COALESCE(s.focus_seconds, 0), COALESCE(sf.focus_seconds, 0)) AS focus_seconds,
-      MAX(COALESCE(s.questions_solved, 0), COALESCE(a.questions_solved, 0)) AS questions_solved,
-      MAX(COALESCE(s.correct_answers, 0), COALESCE(a.correct_answers, 0)) AS correct_answers,
+      u.is_active,
+      CASE WHEN sf.student_id IS NOT NULL THEN COALESCE(sf.focus_seconds, 0) ELSE COALESCE(s.focus_seconds, 0) END AS focus_seconds,
+      CASE WHEN a.student_id IS NOT NULL THEN COALESCE(a.questions_solved, 0) ELSE COALESCE(s.questions_solved, 0) END AS questions_solved,
+      CASE WHEN a.student_id IS NOT NULL THEN COALESCE(a.correct_answers, 0) ELSE COALESCE(s.correct_answers, 0) END AS correct_answers,
       CASE WHEN g.parent_line_user_id IS NOT NULL THEN 1 ELSE 0 END AS guardian_connected,
-      g.pairing_code,
+      CASE WHEN g.parent_line_user_id IS NULL AND g.pairing_used_at IS NULL AND datetime(g.pairing_expires_at) > CURRENT_TIMESTAMP THEN g.pairing_code ELSE NULL END AS pairing_code,
       COALESCE(g.notifications_enabled, 0) AS notifications_enabled
     FROM device_users u
     LEFT JOIN guardian_profiles g ON g.student_id = u.id
@@ -42,7 +43,7 @@ export async function GET(request: Request) {
     LEFT JOIN session_focus sf ON sf.student_id = u.id
     LEFT JOIN attempts a ON a.student_id = u.id
     ORDER BY u.created_at DESC LIMIT 100`).bind(today, today, today).all<Record<string, unknown>>();
-  const totals = results.reduce((sum, row) => ({
+  const totals = results.filter((row) => Boolean(row.is_active)).reduce((sum, row) => ({
     student_count: sum.student_count + 1,
     focus_seconds: sum.focus_seconds + Number(row.focus_seconds ?? 0),
     questions_solved: sum.questions_solved + Number(row.questions_solved ?? 0),
@@ -63,8 +64,30 @@ export async function POST(request: Request) {
 
   await ensureDeviceAuthTables(runtime.DB);
   await ensureGuardianReportTables(runtime.DB);
-  const payload = await request.json() as { studentId?: string; enabled?: boolean };
+  let payload: { action?: "guardian-notification" | "student-status"; studentId?: string; enabled?: boolean; active?: boolean };
+  try {
+    payload = await request.json() as typeof payload;
+  } catch {
+    return Response.json({ error: "JSON形式が正しくありません。" }, { status: 400 });
+  }
   const studentId = payload.studentId?.trim();
+  if (payload.action === "student-status") {
+    if (!studentId || typeof payload.active !== "boolean") {
+      return Response.json({ error: "studentId and active are required" }, { status: 400 });
+    }
+    if (payload.active) {
+      const activeCount = await runtime.DB.prepare("SELECT COUNT(*) AS count FROM device_users WHERE is_active = 1")
+        .first<{ count: number }>();
+      if (Number(activeCount?.count ?? 0) >= 6) {
+        return Response.json({ error: "有効にできる生徒は6人までです。" }, { status: 409 });
+      }
+    }
+    const result = await runtime.DB.prepare("UPDATE device_users SET is_active = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+      .bind(payload.active ? 1 : 0, studentId).run();
+    if (!result.meta.changes) return Response.json({ error: "student not found" }, { status: 404 });
+    if (!payload.active) await runtime.DB.prepare("DELETE FROM device_sessions WHERE user_id = ?").bind(studentId).run();
+    return Response.json({ saved: true, active: payload.active });
+  }
   if (!studentId || typeof payload.enabled !== "boolean") {
     return Response.json({ error: "studentId and enabled are required" }, { status: 400 });
   }
@@ -72,22 +95,26 @@ export async function POST(request: Request) {
   const student = await runtime.DB.prepare(`SELECT COALESCE(g.student_name, u.display_name) AS display_name
       FROM device_users u
       LEFT JOIN guardian_profiles g ON g.student_id = u.id
-      WHERE u.id = ?`)
+    WHERE u.id = ?`)
     .bind(studentId).first<{ display_name: string }>();
   if (!student) return Response.json({ error: "student not found" }, { status: 404 });
 
-  const existing = await runtime.DB.prepare("SELECT pairing_code FROM guardian_profiles WHERE student_id = ?")
-    .bind(studentId).first<{ pairing_code: string }>();
-  const pairingCode = existing?.pairing_code ?? makePairingCode();
+  const existing = await runtime.DB.prepare("SELECT parent_line_user_id FROM guardian_profiles WHERE student_id = ?")
+    .bind(studentId).first<{ parent_line_user_id: string | null }>();
+  const pairingCode = existing?.parent_line_user_id ? null : makePairingCode();
+  const pairingExpiresAt = pairingCode ? new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString() : null;
   await runtime.DB.prepare(`INSERT INTO guardian_profiles
-    (student_id, student_name, pairing_code, notifications_enabled, parent_consent_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    (student_id, student_name, pairing_code, pairing_expires_at, pairing_used_at, notifications_enabled, parent_consent_at, updated_at)
+    VALUES (?, ?, ?, ?, NULL, ?, ?, CURRENT_TIMESTAMP)
     ON CONFLICT(student_id) DO UPDATE SET
       student_name = excluded.student_name,
+      pairing_code = CASE WHEN guardian_profiles.parent_line_user_id IS NULL THEN excluded.pairing_code ELSE guardian_profiles.pairing_code END,
+      pairing_expires_at = CASE WHEN guardian_profiles.parent_line_user_id IS NULL THEN excluded.pairing_expires_at ELSE guardian_profiles.pairing_expires_at END,
+      pairing_used_at = CASE WHEN guardian_profiles.parent_line_user_id IS NULL THEN NULL ELSE guardian_profiles.pairing_used_at END,
       notifications_enabled = excluded.notifications_enabled,
       parent_consent_at = excluded.parent_consent_at,
       updated_at = CURRENT_TIMESTAMP`)
-    .bind(studentId, student.display_name, pairingCode, payload.enabled ? 1 : 0, payload.enabled ? new Date().toISOString() : null)
+    .bind(studentId, student.display_name, pairingCode ?? makePairingCode(), pairingExpiresAt, payload.enabled ? 1 : 0, payload.enabled ? new Date().toISOString() : null)
     .run();
 
   return Response.json({ saved: true, pairingCode, enabled: payload.enabled });

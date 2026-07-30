@@ -57,6 +57,13 @@
       "when": 1785400620075,
       "tag": "0007_classy_boomer",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1785401630418,
+      "tag": "0008_salty_reaper",
+      "breakpoints": true
     }
   ]
 }

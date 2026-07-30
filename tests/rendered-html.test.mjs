@@ -32,3 +32,19 @@ test("practice and timer activity contribute to the same live session", async ()
   assert.match(page, /formatJstStartTime/);
   assert.match(page, /freeStudyAction === "juku"/);
 });
+
+test("ranking is calculated from durable student records", async () => {
+  const [page, rankingsRoute] = await Promise.all([
+    readFile(new URL("app/page.tsx", root), "utf8"),
+    readFile(new URL("app/api/rankings/route.ts", root), "utf8"),
+  ]);
+
+  assert.doesNotMatch(page, /const leaderboard/);
+  assert.doesNotMatch(page, /昨日より 1 UP/);
+  assert.match(page, /\/api\/rankings\?period=/);
+  assert.match(page, /myRanking\?\.rank/);
+  assert.match(rankingsRoute, /SUM\(focus_seconds\)/);
+  assert.match(rankingsRoute, /SUM\(questions_solved\)/);
+  assert.match(rankingsRoute, /student_login_days/);
+  assert.match(rankingsRoute, /score === previousScore \? previousRank : index \+ 1/);
+});

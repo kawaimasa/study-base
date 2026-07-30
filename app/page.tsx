@@ -70,6 +70,16 @@ type RegisteredStudyMate = {
   activeSeconds: number;
 };
 
+type RankingEntry = {
+  id: string;
+  displayName: string;
+  rank: number;
+  focusSeconds: number;
+  questionsSolved: number;
+  streak: number;
+  isMe: boolean;
+};
+
 type FreeStudyAction = { key: string; label: string };
 
 function toGivenNameOnly(value: string) {
@@ -393,14 +403,6 @@ const questions = [
   { subject: "社会", unit: "地理 / アジア", question: "熱帯地域などで、単一の商品作物を大規模に栽培する農園を何といいますか。", hint: "天然ゴムやカカオなどを生産します。", answer: "プランテーション", explanation: "プランテーションでは輸出向けの商品作物が大規模に栽培されます。" },
 ];
 
-const leaderboard = [
-  { rank: 1, name: "ハル", time: "2時間32分", streak: 21, color: "purple" },
-  { rank: 2, name: "みお", time: "2時間16分", streak: 14, color: "blue", me: true },
-  { rank: 3, name: "りく", time: "1時間52分", streak: 9, color: "coral" },
-  { rank: 4, name: "なほ", time: "1時間38分", streak: 18, color: "green" },
-  { rank: 5, name: "るい", time: "1時間24分", streak: 7, color: "yellow" },
-];
-
 function formatStudyTime(minutes: number) {
   const hours = Math.floor(minutes / 60);
   const rest = minutes % 60;
@@ -502,7 +504,9 @@ export default function Home() {
   const [trackedFocusSeconds, setTrackedFocusSeconds] = useState(0);
   const [subjectProgressCounts, setSubjectProgressCounts] = useState<SubjectProgressMap>(defaultSubjectProgress);
   const [guardianEnabled, setGuardianEnabled] = useState(false);
-  const [rankPeriod, setRankPeriod] = useState("今日");
+  const [rankPeriod, setRankPeriod] = useState<"今日" | "今週" | "今月">("今日");
+  const [rankingRows, setRankingRows] = useState<RankingEntry[]>([]);
+  const [rankingLoading, setRankingLoading] = useState(false);
   const [registeredStudyMates, setRegisteredStudyMates] = useState<RegisteredStudyMate[]>([]);
   const [presenceActiveSeconds, setPresenceActiveSeconds] = useState(0);
   const [seenQuestionIds, setSeenQuestionIds] = useState<Record<string, string[]>>({});
@@ -1038,6 +1042,24 @@ export default function Home() {
 
   useEffect(() => {
     if (!authUser) return;
+    const period = rankPeriod === "今週" ? "week" : rankPeriod === "今月" ? "month" : "today";
+    const loadRankings = () => {
+      setRankingLoading(true);
+      void fetch(`/api/rankings?period=${period}`, { cache: "no-store" })
+        .then((response) => response.ok ? response.json() : null)
+        .then((data) => {
+          if (Array.isArray(data?.entries)) setRankingRows(data.entries as RankingEntry[]);
+        })
+        .catch(() => undefined)
+        .finally(() => setRankingLoading(false));
+    };
+    loadRankings();
+    const rankingTimer = window.setInterval(loadRankings, 15_000);
+    return () => window.clearInterval(rankingTimer);
+  }, [authUser, rankPeriod]);
+
+  useEffect(() => {
+    if (!authUser) return;
 
     const mode = view === "practice"
       ? "20問演習"
@@ -1308,31 +1330,15 @@ export default function Home() {
 
   const rankingEntries = useMemo(() => {
     const palette = ["purple", "blue", "coral", "green", "yellow"] as const;
-    const baseEntries = registeredStudyMates.length > 0
-      ? [...registeredStudyMates]
-          .sort((left, right) => {
-            const rightScore = right.focusSeconds + right.questionsSolved * 18;
-            const leftScore = left.focusSeconds + left.questionsSolved * 18;
-            return rightScore - leftScore || Number(right.isMe) - Number(left.isMe);
-          })
-          .map((student, index) => ({
-            rank: index + 1,
-            name: student.displayName,
-            time: formatStudyTime(Math.floor(Math.max(0, student.focusSeconds) / 60)),
-            streak: Math.max(1, Math.floor(Math.max(0, student.questionsSolved) / 4) + 1),
-            color: palette[index % palette.length],
-            me: student.isMe,
-          }))
-      : leaderboard;
-    const filler = leaderboard
-      .filter((entry) => !baseEntries.some((student) => student.name === entry.name))
-      .slice(0, Math.max(0, 5 - baseEntries.length))
-      .map((entry, index) => ({
-        ...entry,
-        rank: baseEntries.length + index + 1,
-      }));
-    return [...baseEntries.slice(0, 5), ...filler].slice(0, 5);
-  }, [registeredStudyMates]);
+    return rankingRows.map((student, index) => ({
+      ...student,
+      name: student.displayName,
+      time: formatStudyTime(Math.floor(Math.max(0, student.focusSeconds) / 60)),
+      color: palette[index % palette.length],
+      me: student.isMe,
+    }));
+  }, [rankingRows]);
+  const myRanking = rankingEntries.find((entry) => entry.me);
 
   const weeklyStartMs = weeklyTest ? new Date(weeklyTest.startsAt).getTime() : 0;
   const weeklyEndMs = weeklyTest ? weeklyStartMs + weeklyTest.durationMinutes * 60_000 : 0;
@@ -2161,11 +2167,13 @@ export default function Home() {
 
         {view === "ranking" && (
           <section className="ranking-page">
-            <div className="ranking-hero"><div><p className="eyebrow">LEADERBOARD</p><h1>みんなの頑張りが、<br />次の一歩になる。</h1></div><div className="rank-badge"><span>YOUR RANK</span><strong>2</strong><small>昨日より 1 UP ↑</small></div></div>
-            <div className="period-tabs">{["今日", "今週", "今月"].map((period) => <button key={period} className={rankPeriod === period ? "active" : ""} onClick={() => setRankPeriod(period)}>{period}</button>)}</div>
+            <div className="ranking-hero"><div><p className="eyebrow">LEADERBOARD</p><h1>みんなの頑張りが、<br />次の一歩になる。</h1></div><div className="rank-badge"><span>YOUR RANK</span><strong>{myRanking?.rank ?? "—"}</strong><small>{rankPeriod}の集中時間で集計</small></div></div>
+            <div className="period-tabs">{(["今日", "今週", "今月"] as const).map((period) => <button key={period} className={rankPeriod === period ? "active" : ""} onClick={() => setRankPeriod(period)}>{period}</button>)}</div>
             <div className="ranking-list">
+              {rankingLoading && rankingEntries.length === 0 && <p className="ranking-status">順位を集計しています…</p>}
+              {!rankingLoading && rankingEntries.length === 0 && <p className="ranking-status">登録済みの生徒データがありません。</p>}
               {rankingEntries.map((person) => (
-                <article key={person.rank} className={person.me ? "me" : ""}><span className={`rank-number rank-${person.rank}`}>{person.rank}</span><span className={`friend-avatar ${person.color}`}>{person.name[0]}</span><div><strong>{person.name}{person.me && <em>YOU</em>}</strong><small>🔥 {person.streak}日連続</small></div><span className="rank-time">{person.time}<small>集中時間</small></span></article>
+                <article key={person.id} className={person.me ? "me" : ""}><span className={`rank-number rank-${person.rank}`}>{person.rank}</span><span className={`friend-avatar ${person.color}`}>{person.name[0]}</span><div><strong>{person.name}{person.me && <em>YOU</em>}</strong><small>{person.streak > 0 ? `🔥 ${person.streak}日連続` : `${person.questionsSolved}問`}</small></div><span className="rank-time">{person.time}<small>集中時間</small></span></article>
               ))}
             </div>
             <p className="privacy-note">ニックネームだけで参加。個人情報は表示されません。</p>

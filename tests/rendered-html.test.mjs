@@ -31,6 +31,10 @@ test("practice and timer activity contribute to the same live session", async ()
   assert.match(page, /status === "studying"/);
   assert.match(page, /formatJstStartTime/);
   assert.match(page, /freeStudyAction === "juku"/);
+  assert.ok(
+    page.indexOf("const reportFocusSeconds") < page.indexOf("focusSeconds: reportFocusSeconds"),
+    "focus totals must be initialized before the live-roster synchronization hook",
+  );
 });
 
 test("ranking is calculated from durable student records", async () => {

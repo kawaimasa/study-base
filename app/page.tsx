@@ -1144,19 +1144,6 @@ export default function Home() {
 
   useEffect(() => {
     if (!authUser) return;
-    setRegisteredStudyMates((current) => current.map((student) => (
-      student.id === authUser.id
-        ? {
-            ...student,
-            focusSeconds: reportFocusSeconds,
-            questionsSolved: todayTotal,
-          }
-        : student
-    )));
-  }, [authUser, reportFocusSeconds, todayTotal]);
-
-  useEffect(() => {
-    if (!authUser) return;
     try {
       const scopedKey = userStorageKey(REVIEW_QUEUE_STORAGE_KEY, authUser.id);
       const savedQueue = window.localStorage.getItem(scopedKey) ?? window.localStorage.getItem(REVIEW_QUEUE_STORAGE_KEY);
@@ -1231,6 +1218,20 @@ export default function Home() {
   const reportFocusSeconds = baseTodayFocusSeconds + trackedFocusSeconds;
   const reportFocusHours = Math.floor(reportFocusSeconds / 3600);
   const reportFocusMinutes = Math.floor((reportFocusSeconds % 3600) / 60);
+
+  useEffect(() => {
+    if (!authUser) return;
+    setRegisteredStudyMates((current) => current.map((student) => (
+      student.id === authUser.id
+        ? {
+            ...student,
+            focusSeconds: reportFocusSeconds,
+            questionsSolved: todayTotal,
+          }
+        : student
+    )));
+  }, [authUser, reportFocusSeconds, todayTotal]);
+
   const focusTrackedMinutes = Math.floor(trackedFocusSeconds / 60);
   const focusBaseMinutes = Math.floor(baseTodayFocusSeconds / 60);
   const focusAwayMinutes = Math.floor(awaySeconds / 60);

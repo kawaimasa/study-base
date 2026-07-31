@@ -132,6 +132,8 @@ const SUBJECT_PROGRESS_STORAGE_KEY = "study-base-subject-progress";
 const LOGIN_DAYS_STORAGE_KEY = "study-base-login-days";
 const REVIEW_QUEUE_STORAGE_KEY = "study-base-review-queue";
 const FREE_STUDY_SESSIONS_STORAGE_KEY = "study-base-free-study-sessions";
+const ACTIVE_STOPWATCH_STORAGE_KEY = "study-base-active-stopwatch";
+const ACTIVE_STOPWATCH_VERSION = 1;
 const PRACTICE_DRAFT_STORAGE_KEY = "study-base-practice-draft";
 // Version 2 invalidates incomplete drafts created by the old duplicated
 // English bank, including the 19-question set that could not be resumed.
@@ -152,6 +154,7 @@ const FREE_STUDY_ACTIONS: FreeStudyAction[] = [
   { key: "other", label: "その他" },
 ];
 const IDLE_WARNING_SECONDS = 90;
+const APP_SWITCH_BLUR_WINDOW_MS = 2_000;
 const STUDENT_LOCK_START_HOUR = 0;
 const STUDENT_LOCK_END_HOUR = 5;
 const mistakeSubjectFilters = ["すべて", "国語", "数学", "英語", "理科", "社会"] as const;
@@ -557,12 +560,17 @@ export default function Home() {
     || (view === "practice" && practicePhase === "questions")
     || (view === "weekly-test" && weeklyStarted && weeklyTest?.kind === "active"));
   const jukuModeActive = stopwatchRunning && freeStudyAction === "juku";
+  const problemSolvingActive = (view === "practice" && practicePhase === "questions")
+    || view === "mistakes"
+    || (view === "weekly-test" && weeklyStarted && weeklyTest?.kind === "active");
+  const jukuNonProblemAway = jukuModeActive && !problemSolvingActive;
   const sessionActiveRef = useRef(sessionActive);
   const presenceSessionIdRef = useRef<string | null>(null);
   const presenceStartedAtRef = useRef(0);
   const presenceActiveSecondsRef = useRef(0);
   const presenceLastTickAtRef = useRef(Date.now());
   const awayStartedAtRef = useRef<number | null>(null);
+  const lastWindowBlurAtRef = useRef(0);
   const lastStudyActionAtRef = useRef(Date.now());
   const idleActiveRef = useRef(false);
   const focusLastTickAtRef = useRef(Date.now());
@@ -570,6 +578,8 @@ export default function Home() {
   const stopwatchStartedAtRef = useRef<number | null>(null);
   const stopwatchBaseSecondsRef = useRef(0);
   const stopwatchSecondsRef = useRef(0);
+  const stopwatchRestoredForRef = useRef<string | null>(null);
+  const stopwatchPersistenceReadyRef = useRef(false);
   const weeklyAwayStartedAtRef = useRef<number | null>(null);
   const weeklySubmittingRef = useRef(false);
   const practiceDraftRestoredForRef = useRef<string | null>(null);
@@ -627,6 +637,19 @@ export default function Home() {
     setAwaySeconds(nextAway.awaySeconds);
     setJukuAwaySeconds(nextAway.jukuAwaySeconds);
     persistAwayStats(nextAway);
+  };
+
+  const startAwayPeriod = (atJuku: boolean) => {
+    if (!sessionActiveRef.current || awayStartedAtRef.current !== null) return;
+    awayStartedAtRef.current = Date.now();
+    const current = awayStatsRef.current;
+    const nextAway: TodayAwayStats = atJuku
+      ? { ...current, jukuAwayCount: current.jukuAwayCount + 1, awayStartedAt: awayStartedAtRef.current, awayAtJuku: true, stateUpdatedAtMs: Date.now() }
+      : { ...current, awayCount: current.awayCount + 1, awayStartedAt: awayStartedAtRef.current, awayAtJuku: false, stateUpdatedAtMs: Date.now() };
+    awayStatsRef.current = nextAway;
+    persistAwayStats(nextAway, true);
+    if (atJuku) setJukuAwayCount(nextAway.jukuAwayCount);
+    else setAwayCount(nextAway.awayCount);
   };
 
   const loadWeeklyTest = async () => {
@@ -768,6 +791,15 @@ export default function Home() {
 
   useEffect(() => {
     if (!sessionActive) return;
+    if (jukuNonProblemAway) {
+      startAwayPeriod(true);
+      return;
+    }
+    if (!document.hidden) finishAwayPeriod();
+  }, [jukuNonProblemAway, sessionActive]);
+
+  useEffect(() => {
+    if (!sessionActive) return;
     focusLastTickAtRef.current = Date.now();
     const focusCounter = window.setInterval(() => {
       const now = Date.now();
@@ -831,32 +863,38 @@ export default function Home() {
   }, [jukuModeActive, sessionActive]);
 
   useEffect(() => {
-    const startAway = () => {
-      if (!sessionActiveRef.current || awayStartedAtRef.current !== null) return;
-      awayStartedAtRef.current = Date.now();
-      const current = awayStatsRef.current;
-      const nextAway: TodayAwayStats = jukuModeActive
-        ? { ...current, jukuAwayCount: current.jukuAwayCount + 1, awayStartedAt: awayStartedAtRef.current, awayAtJuku: true, stateUpdatedAtMs: Date.now() }
-        : { ...current, awayCount: current.awayCount + 1, awayStartedAt: awayStartedAtRef.current, awayAtJuku: false, stateUpdatedAtMs: Date.now() };
-      awayStatsRef.current = nextAway;
-      persistAwayStats(nextAway, true);
-      if (jukuModeActive) {
-        setJukuAwayCount(nextAway.jukuAwayCount);
-      } else {
-        setAwayCount(nextAway.awayCount);
+    const handleWindowBlur = () => {
+      lastWindowBlurAtRef.current = Date.now();
+    };
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        // Mobile browsers do not expose a definitive "screen was turned off" event.
+        // In juku mode, only a recent window blur is treated as an app switch;
+        // visibility changes without blur are treated as screen-off and ignored.
+        if (!jukuModeActive || Date.now() - lastWindowBlurAtRef.current <= APP_SWITCH_BLUR_WINDOW_MS) {
+          startAwayPeriod(jukuModeActive);
+        }
+      }
+      else if (jukuNonProblemAway) startAwayPeriod(true);
+      else finishAwayPeriod();
+    };
+    const handlePageHide = () => {
+      if (!jukuModeActive || Date.now() - lastWindowBlurAtRef.current <= APP_SWITCH_BLUR_WINDOW_MS) {
+        startAwayPeriod(jukuModeActive);
       }
     };
-    const handleVisibilityChange = () => document.hidden ? startAway() : finishAwayPeriod();
 
+    window.addEventListener("blur", handleWindowBlur);
     document.addEventListener("visibilitychange", handleVisibilityChange);
-    window.addEventListener("pagehide", startAway);
-    window.addEventListener("pageshow", finishAwayPeriod);
+    window.addEventListener("pagehide", handlePageHide);
+    window.addEventListener("pageshow", handleVisibilityChange);
     return () => {
+      window.removeEventListener("blur", handleWindowBlur);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
-      window.removeEventListener("pagehide", startAway);
-      window.removeEventListener("pageshow", finishAwayPeriod);
+      window.removeEventListener("pagehide", handlePageHide);
+      window.removeEventListener("pageshow", handleVisibilityChange);
     };
-  }, [authUser, challengeMinutes, freeStudyAction, freeStudyPlan, jukuModeActive, selectedSubject, sessionActive, setNumber, timerMode, view]);
+  }, [authUser, challengeMinutes, freeStudyAction, freeStudyPlan, jukuModeActive, jukuNonProblemAway, selectedSubject, sessionActive, setNumber, timerMode, view]);
 
   useEffect(() => {
     const messageTimer = window.setInterval(() => setDailyMessageDate(getJstDateKey()), 60_000);
@@ -1375,7 +1413,7 @@ export default function Home() {
 
       const parsedQueue = JSON.parse(savedQueue) as Question[];
       if (Array.isArray(parsedQueue)) {
-        setReviewQueue(parsedQueue.filter((question) => typeof question?.id === "string").slice(0, 500));
+        setReviewQueue(parsedQueue.filter((question) => typeof question?.id === "string"));
         window.localStorage.setItem(scopedKey, savedQueue);
       }
     } catch {
@@ -1396,6 +1434,87 @@ export default function Home() {
       // Free-study notes are optional; continue without saved sessions.
     }
   }, [authUser]);
+
+  useEffect(() => {
+    if (!authUser || stopwatchRestoredForRef.current === authUser.id) return;
+    stopwatchRestoredForRef.current = authUser.id;
+    stopwatchPersistenceReadyRef.current = false;
+    const storageKey = userStorageKey(ACTIVE_STOPWATCH_STORAGE_KEY, authUser.id);
+    try {
+      const raw = window.localStorage.getItem(storageKey);
+      if (raw) {
+        const saved = JSON.parse(raw) as Record<string, unknown>;
+        if (Number(saved.version) === ACTIVE_STOPWATCH_VERSION) {
+          const wasRunning = Boolean(saved.running);
+          const savedSeconds = Math.max(0, Math.floor(Number(saved.seconds) || 0));
+          const baseSeconds = Math.max(0, Math.floor(Number(saved.baseSeconds) || savedSeconds));
+          const startedAtMs = Math.max(0, Math.floor(Number(saved.startedAtMs) || 0));
+          const elapsedSinceSave = wasRunning && startedAtMs > 0
+            ? Math.max(0, Math.floor((Date.now() - startedAtMs) / 1000))
+            : 0;
+          const restoredSeconds = wasRunning ? baseSeconds + elapsedSinceSave : savedSeconds;
+          const savedAction = typeof saved.action === "string" && FREE_STUDY_ACTIONS.some((item) => item.key === saved.action)
+            ? saved.action as FreeStudyAction["key"]
+            : FREE_STUDY_ACTIONS[0].key;
+
+          stopwatchSecondsRef.current = restoredSeconds;
+          stopwatchBaseSecondsRef.current = restoredSeconds;
+          stopwatchStartedAtRef.current = null;
+          setStopwatchSeconds(restoredSeconds);
+          setFreeStudyAction(savedAction);
+          setFreeStudyPlan(typeof saved.plan === "string" ? saved.plan.slice(0, 500) : "");
+          setFreeStudyResult(typeof saved.result === "string" ? saved.result.slice(0, 1000) : "");
+          setTimerMode("stopwatch");
+          setStopwatchRunning(wasRunning);
+          if (restoredSeconds > 0 || wasRunning) setView("timer");
+        } else {
+          window.localStorage.removeItem(storageKey);
+        }
+      }
+    } catch {
+      window.localStorage.removeItem(storageKey);
+    }
+    const readyTimer = window.setTimeout(() => {
+      stopwatchPersistenceReadyRef.current = true;
+    }, 0);
+    return () => window.clearTimeout(readyTimer);
+  }, [authUser]);
+
+  useEffect(() => {
+    if (!authUser || stopwatchRestoredForRef.current !== authUser.id || !stopwatchPersistenceReadyRef.current) return;
+    const storageKey = userStorageKey(ACTIVE_STOPWATCH_STORAGE_KEY, authUser.id);
+    const persistStopwatch = () => {
+      const startedAtMs = stopwatchRunning ? stopwatchStartedAtRef.current : null;
+      const exactSeconds = stopwatchRunning && startedAtMs !== null
+        ? stopwatchBaseSecondsRef.current + Math.max(0, Math.floor((Date.now() - startedAtMs) / 1000))
+        : stopwatchSecondsRef.current;
+      if (exactSeconds <= 0 && !stopwatchRunning) {
+        window.localStorage.removeItem(storageKey);
+        return;
+      }
+      window.localStorage.setItem(storageKey, JSON.stringify({
+        version: ACTIVE_STOPWATCH_VERSION,
+        savedAt: Date.now(),
+        seconds: exactSeconds,
+        running: stopwatchRunning,
+        startedAtMs: stopwatchRunning ? (startedAtMs ?? Date.now()) : null,
+        baseSeconds: stopwatchRunning ? stopwatchBaseSecondsRef.current : exactSeconds,
+        action: freeStudyAction,
+        plan: freeStudyPlan,
+        result: freeStudyResult,
+      }));
+    };
+    try {
+      persistStopwatch();
+    } catch {
+      // Keep the active stopwatch running even when browser storage is unavailable.
+    }
+    const handlePageHide = () => {
+      try { persistStopwatch(); } catch { /* Best-effort final save. */ }
+    };
+    window.addEventListener("pagehide", handlePageHide);
+    return () => window.removeEventListener("pagehide", handlePageHide);
+  }, [authUser, freeStudyAction, freeStudyPlan, freeStudyResult, stopwatchRunning, stopwatchSeconds]);
 
   useEffect(() => {
     if (!authUser || !awayStatsLoaded) return;
@@ -1619,7 +1738,7 @@ export default function Home() {
       setReviewQueue((current) => {
         const missed = data.resultQuestions.filter((question) => !question.correct) as unknown as Question[];
         const missedIds = new Set(missed.map((question) => question.id));
-        const next = [...missed, ...current.filter((question) => !missedIds.has(question.id))].slice(0, 500);
+        const next = [...missed, ...current.filter((question) => !missedIds.has(question.id))];
         try { window.localStorage.setItem(userStorageKey(REVIEW_QUEUE_STORAGE_KEY, authUser.id), JSON.stringify(next)); } catch { /* Keep this session's queue. */ }
         return next;
       });
@@ -1999,7 +2118,7 @@ export default function Home() {
       const nextQueue = [
         ...missedQuestions,
         ...current.filter((question) => !missedIds.has(question.id) && !correctIds.has(question.id)),
-      ].slice(0, 500);
+      ];
 
       try {
         if (authUser) window.localStorage.setItem(userStorageKey(REVIEW_QUEUE_STORAGE_KEY, authUser.id), JSON.stringify(nextQueue));
@@ -2139,7 +2258,7 @@ export default function Home() {
     }
     setReviewQueue((current) => {
       const remaining = current.filter((item) => item.id !== question.id);
-      const nextQueue = result === "again" ? [...remaining, question].slice(0, 500) : remaining;
+      const nextQueue = result === "again" ? [...remaining, question] : remaining;
       try {
         if (authUser) window.localStorage.setItem(userStorageKey(REVIEW_QUEUE_STORAGE_KEY, authUser.id), JSON.stringify(nextQueue));
       } catch {
@@ -2506,7 +2625,7 @@ export default function Home() {
               </div>
               <label className="free-study-input"><span>開始前：今日は何をする？</span><input value={freeStudyPlan} disabled={stopwatchRunning} onChange={(event) => setFreeStudyPlan(event.target.value)} placeholder="例：数学ワーク P32〜35、英単語50個" /></label>
               {stopwatchSeconds > 0 && <label className="free-study-input"><span>終了後：今日は何をした？</span><textarea value={freeStudyResult} onChange={(event) => setFreeStudyResult(event.target.value)} placeholder="例：ワーク2周、英単語50個、間違い直し完了" /></label>}
-              <p>{freeStudyAtJuku ? "塾モードでは離脱時間や放置時間を記録しません。授業中の利用はノーカウントです。" : "フリー計測中は、やった内容と時間を記録して後で見返せます。"}</p>
+              <p>{freeStudyAtJuku ? "塾モードでは、演習・復習・一斉テスト以外の時間を塾離脱として記録します。" : "フリー計測中は、やった内容と時間を記録して後で見返せます。"}</p>
             </section>}
             <div className={`timer-orbit ${(timerMode === "countdown" ? running : stopwatchRunning) ? "running" : ""}`}><span>{timerMode === "countdown" ? "残り時間" : "経過時間"}</span><strong>{timerMode === "countdown" ? timerLabel : stopwatchLabel}</strong><small>{timerMode === "countdown" ? running ? "計測中" : seconds === 0 ? "終了" : "準備OK" : stopwatchRunning ? "計測中" : stopwatchSeconds > 0 ? "記録待ち" : "準備OK"}</small></div>
             {timerMode === "countdown" ? <div className="timer-actions">
@@ -2524,9 +2643,9 @@ export default function Home() {
             <section className={`away-monitor ${sessionActive ? "monitoring" : ""}`} aria-label="離脱時間モニター">
               <div className="away-monitor-head"><div><span className="monitor-dot" /><strong>離脱時間モニター</strong></div><span className="monitor-status">{idleActiveRef.current ? "放置中" : sessionActive ? "計測中" : "待機中"}</span></div>
               <div className="away-metrics"><div><span>{freeStudyAtJuku ? "塾時間の離脱" : "離脱時間"}</span><strong>{formatAwayTime(freeStudyAwaySeconds)}</strong></div><div><span>放置時間</span><strong>{freeStudyAtJuku ? "0分0秒" : idleTimeLabel}</strong></div><div><span>回数</span><strong>{(freeStudyAtJuku ? jukuAwayCount : awayCount) + (freeStudyAtJuku ? 0 : idleCount)}<small>回</small></strong></div></div>
-              <p>{freeStudyAtJuku ? "塾モード中は、離脱時間や放置時間はノーカウントです。" : "別タブ・別アプリ・画面オフの時間を自動で記録します。90秒以上止まると放置時間も加算されます。"}</p>
+              <p>{freeStudyAtJuku ? "塾モードでは問題画面だけを学習中とし、その他の画面・別タブ・別アプリを塾離脱として記録します。画面オフは離脱に数えません。集中時間・ランキングには加算しません。" : "別タブ・別アプリ・画面オフの時間を自動で記録します。90秒以上止まると放置時間も加算されます。"}</p>
             </section>
-            <div className="focus-rules"><div className={awaySeconds + idleSeconds > 0 ? "away-recorded" : ""}><Icon>◌</Icon><strong>離脱時間の扱い</strong><span>{freeStudyAtJuku ? `塾中は ${formatAwayTime(jukuAwaySeconds)} も集計に入れません` : awaySeconds + idleSeconds > 0 ? `記録中 ${awayTimeLabel} / 放置 ${idleTimeLabel}` : "離脱なしで計測中"}</span></div><div><Icon>★</Icon><strong>集中時間の考え方</strong><span>やった時間だけを記録して、塾ではノーカウントにできます。</span></div></div>
+            <div className="focus-rules"><div className={awaySeconds + idleSeconds > 0 ? "away-recorded" : ""}><Icon>◌</Icon><strong>離脱時間の扱い</strong><span>{freeStudyAtJuku ? `問題以外の時間 ${formatAwayTime(jukuAwaySeconds)}` : awaySeconds + idleSeconds > 0 ? `記録中 ${awayTimeLabel} / 放置 ${idleTimeLabel}` : "離脱なしで計測中"}</span></div><div><Icon>★</Icon><strong>集中時間の考え方</strong><span>やった時間だけを記録して、塾ではノーカウントにできます。</span></div></div>
           </section>
         )}
 

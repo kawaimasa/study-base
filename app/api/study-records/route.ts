@@ -46,8 +46,7 @@ export async function GET(request: Request) {
   const { results = [] } = await runtime.DB.prepare(`SELECT question_id, question_key, subject, question_json, wrong_count, last_wrong_at
     FROM mistake_notes
     WHERE student_id = ? AND status = 'active'
-    ORDER BY last_wrong_at DESC
-    LIMIT 500`).bind(user.id).all<Record<string, unknown>>();
+    ORDER BY last_wrong_at DESC`).bind(user.id).all<Record<string, unknown>>();
   return Response.json({
     ...snapshot,
     mistakes: results.map((row) => ({

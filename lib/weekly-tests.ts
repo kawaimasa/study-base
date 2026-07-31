@@ -95,6 +95,33 @@ export function selectWeeklyQuestions(subjects: string[], count: number) {
   return shuffled(selected);
 }
 
+export function findWeeklyQuestionById(id: string) {
+  return questionBank.find((question) => question.id === id) ?? null;
+}
+
+export function selectWeeklyQuestionsFromCandidates(candidates: WeeklyQuestion[], subjects: string[], count: number) {
+  const subjectSet = new Set(subjects);
+  const seen = new Set<string>();
+  const unique = candidates.filter((question) => {
+    if (!subjectSet.has(question.subject)) return false;
+    const key = questionKey(question);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  const buckets = subjects.map((subject) => unique.filter((question) => question.subject === subject));
+  const selected: WeeklyQuestion[] = [];
+  let round = 0;
+  while (selected.length < count && buckets.some((bucket) => round < bucket.length)) {
+    for (const bucket of buckets) {
+      if (selected.length >= count) break;
+      if (bucket[round]) selected.push(bucket[round]);
+    }
+    round += 1;
+  }
+  return selected;
+}
+
 function unitKey(question: WeeklyQuestion) {
   return `${question.subject}::${question.unit}`;
 }

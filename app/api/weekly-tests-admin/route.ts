@@ -1,7 +1,8 @@
 import { env } from "cloudflare:workers";
 import { getAuthenticatedAdmin } from "../../../lib/admin-auth";
 import { ensureDeviceAuthTables, type DeviceAuthEnv } from "../../../lib/device-auth";
-import { ensureWeeklyTestTables, selectSmartWeeklyQuestions, type WeeklyQuestion, type WeeklyQuestionInsights } from "../../../lib/weekly-tests";
+import { ensureStudyRecordTables } from "../../../lib/study-records";
+import { ensureWeeklyTestTables, findWeeklyQuestionById, selectSmartWeeklyQuestions, selectWeeklyQuestionsFromCandidates, type WeeklyQuestion, type WeeklyQuestionInsights } from "../../../lib/weekly-tests";
 
 const validSubjects = ["国語", "数学", "英語", "理科", "社会"];
 
@@ -51,6 +52,7 @@ export async function POST(request: Request) {
   const admin = await getAuthenticatedAdmin(request, runtime.DB);
   if (!admin) return Response.json({ error: "admin login required" }, { status: 401 });
   await ensureWeeklyTestTables(runtime.DB);
+  await ensureStudyRecordTables(runtime.DB);
   let payload: {
     action?: "create" | "cancel";
     testId?: string;
@@ -59,6 +61,7 @@ export async function POST(request: Request) {
     durationMinutes?: number;
     questionCount?: number;
     subjects?: string[];
+    questionSource?: "correct" | "smart";
   };
   try {
     payload = await request.json() as typeof payload;
@@ -78,6 +81,7 @@ export async function POST(request: Request) {
   const durationMinutes = Math.max(5, Math.min(180, Number(payload.durationMinutes ?? 30)));
   const questionCount = Math.max(5, Math.min(50, Number(payload.questionCount ?? 25)));
   const subjects = [...new Set((payload.subjects ?? []).filter((subject) => validSubjects.includes(subject)))];
+  const questionSource = payload.questionSource === "smart" ? "smart" : "correct";
   if (!Number.isFinite(startsAt.getTime())) return Response.json({ error: "開始日時を確認してください。" }, { status: 400 });
   if (subjects.length === 0) return Response.json({ error: "科目を1つ以上選んでください。" }, { status: 400 });
   const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 19).replace("T", " ");
@@ -100,7 +104,38 @@ export async function POST(request: Request) {
       }
     }
   }
-  const questions = selectSmartWeeklyQuestions(subjects, questionCount, insights);
+  let correctCandidateCount = 0;
+  let questions: WeeklyQuestion[];
+  if (questionSource === "correct") {
+    const correctRows = await runtime.DB.prepare(`SELECT
+        a.question_id,
+        c.question_json,
+        COUNT(*) AS correct_count,
+        MAX(a.attempted_at) AS last_correct_at
+      FROM practice_attempts a
+      LEFT JOIN question_catalog c ON c.question_id = a.question_id
+      WHERE a.result = 'correct' AND a.attempted_at >= ?
+      GROUP BY a.question_id, c.question_json
+      ORDER BY correct_count DESC, last_correct_at DESC`)
+      .bind(since).all<Record<string, unknown>>();
+    const correctCandidates = (correctRows.results ?? [])
+      .map((row) => safeJson<WeeklyQuestion | null>(row.question_json, null) ?? findWeeklyQuestionById(String(row.question_id)))
+      .filter((question): question is WeeklyQuestion => Boolean(
+        question
+        && typeof question.id === "string"
+        && typeof question.question === "string"
+        && typeof question.answer === "string"
+        && subjects.includes(question.subject),
+      ));
+    const preferred = selectWeeklyQuestionsFromCandidates(correctCandidates, subjects, questionCount);
+    correctCandidateCount = preferred.length;
+    const seen = new Set(preferred.map((question) => question.question.normalize("NFKC").replace(/\s+/g, " ").trim().toLowerCase()));
+    const fillers = selectSmartWeeklyQuestions(subjects, questionCount, insights)
+      .filter((question) => !seen.has(question.question.normalize("NFKC").replace(/\s+/g, " ").trim().toLowerCase()));
+    questions = [...preferred, ...fillers].slice(0, questionCount);
+  } else {
+    questions = selectSmartWeeklyQuestions(subjects, questionCount, insights);
+  }
   if (questions.length < questionCount) return Response.json({ error: "指定条件の問題数が不足しています。" }, { status: 400 });
 
   const id = crypto.randomUUID();
@@ -108,5 +143,5 @@ export async function POST(request: Request) {
     (id, title, starts_at, duration_minutes, question_count, subjects_json, questions_json, status, created_by)
     VALUES (?, ?, ?, ?, ?, ?, ?, 'published', ?)`)
     .bind(id, title, startsAt.toISOString(), durationMinutes, questionCount, JSON.stringify(subjects), JSON.stringify(questions), admin.id).run();
-  return Response.json({ created: true, id });
+  return Response.json({ created: true, id, questionSource, correctCandidateCount });
 }

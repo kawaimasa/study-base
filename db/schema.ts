@@ -96,6 +96,15 @@ export const questionDeliveries = sqliteTable("question_deliveries", {
   index("question_deliveries_student_subject_idx").on(table.studentId, table.subject),
 ]);
 
+/** Canonical question payloads used to rebuild tests from durable attempts. */
+export const questionCatalog = sqliteTable("question_catalog", {
+  questionId: text("question_id").primaryKey(),
+  questionKey: text("question_key").notNull(),
+  subject: text("subject").notNull(),
+  questionJson: text("question_json").notNull(),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [index("question_catalog_subject_idx").on(table.subject)]);
+
 /** Immutable answer history: the original answer and the student's self-grade. */
 export const practiceAttempts = sqliteTable("practice_attempts", {
   id: integer("id").primaryKey({ autoIncrement: true }),

@@ -17,9 +17,13 @@ test("live study roster uses registered students and durable presence", async ()
   assert.doesNotMatch(page, /const liveStudyMates/);
   assert.match(page, /15_000/);
   assert.match(page, /navigator\.sendBeacon\("\/api\/study-presence"/);
-  assert.match(matesRoute, /LEFT JOIN study_presence/);
+  assert.match(matesRoute, /ranked_live_presence/);
+  assert.match(matesRoute, /ROW_NUMBER\(\) OVER/);
+  assert.match(matesRoute, /CASE WHEN status = 'studying' THEN 0 ELSE 1 END/);
+  assert.match(matesRoute, /LEFT JOIN live_presence/);
   assert.match(matesRoute, /studied_today/);
   assert.match(matesRoute, /FROM device_users u/);
+  assert.match(matesRoute, /u\.id = \?/);
   assert.match(matesRoute, /study_session_totals/);
   assert.match(matesRoute, /practice_attempts/);
   assert.doesNotMatch(matesRoute, /LIMIT 6\b/);
@@ -67,14 +71,18 @@ test("ranking is calculated from durable student records", async () => {
   assert.match(rankingsRoute, /FROM device_users u/);
   assert.match(rankingsRoute, /student_login_days/);
   assert.match(rankingsRoute, /score === previousScore \? previousRank : index \+ 1/);
+  assert.match(rankingsRoute, /entries: entries\.filter\(\(entry\) => entry\.isMe\)/);
 });
 
 test("practice grading and mistake reviews are persisted idempotently in D1", async () => {
-  const [page, recordsRoute, recordsHelper, schema] = await Promise.all([
+  const [page, recordsRoute, recordsHelper, schema, weeklyAdminRoute, weeklyHelper, adminPage] = await Promise.all([
     readFile(new URL("app/page.tsx", root), "utf8"),
     readFile(new URL("app/api/study-records/route.ts", root), "utf8"),
     readFile(new URL("lib/study-records.ts", root), "utf8"),
     readFile(new URL("db/schema.ts", root), "utf8"),
+    readFile(new URL("app/api/weekly-tests-admin/route.ts", root), "utf8"),
+    readFile(new URL("lib/weekly-tests.ts", root), "utf8"),
+    readFile(new URL("app/admin/page.tsx", root), "utf8"),
   ]);
 
   assert.match(page, /action: "attempt-batch"/);
@@ -82,11 +90,23 @@ test("practice grading and mistake reviews are persisted idempotently in D1", as
   assert.match(page, /source: "practice"/);
   assert.match(page, /"mistake-review"/);
   assert.match(recordsRoute, /recordPracticeAttemptBatch/);
+  assert.doesNotMatch(recordsRoute, /LIMIT 500/);
+  assert.doesNotMatch(page, /setReviewQueue\(parsedQueue[\s\S]{0,120}slice\(0, 500\)/);
+  assert.doesNotMatch(page, /nextQueue = result === "again"[\s\S]{0,100}slice\(0, 500\)/);
   assert.match(recordsHelper, /practice_attempt_batches/);
   assert.doesNotMatch(recordsHelper, /question_deliveries[\s\S]{0,160}question_json/);
   assert.doesNotMatch(recordsHelper, /delivered_count/);
   assert.match(recordsHelper, /date\(attempted_at, '\+9 hours'\)/);
+  assert.match(recordsHelper, /CREATE TABLE IF NOT EXISTS question_catalog/);
+  assert.match(recordsHelper, /JSON\.stringify\(question\.payload\)/);
   assert.match(schema, /practiceAttemptBatches/);
+  assert.match(schema, /questionCatalog/);
+  assert.match(weeklyAdminRoute, /a\.result = 'correct'/);
+  assert.match(weeklyAdminRoute, /LEFT JOIN question_catalog/);
+  assert.match(weeklyAdminRoute, /correctCandidateCount/);
+  assert.match(weeklyHelper, /selectWeeklyQuestionsFromCandidates/);
+  assert.match(adminPage, /questionSource: testQuestionSource/);
+  assert.match(adminPage, /過去7日間に正解した問題/);
 });
 
 test("every practice subject keeps a 20-question duplicate-free supply", async () => {
@@ -129,10 +149,22 @@ test("focus, leave and juku time survive navigation without inflating verified s
   ]);
 
   assert.match(page, /const jukuModeActive = stopwatchRunning && freeStudyAction === "juku"/);
+  assert.match(page, /const problemSolvingActive =/);
+  assert.match(page, /const jukuNonProblemAway = jukuModeActive && !problemSolvingActive/);
+  assert.match(page, /if \(jukuNonProblemAway\) \{\s*startAwayPeriod\(true\)/);
+  assert.match(page, /const APP_SWITCH_BLUR_WINDOW_MS = 2_000/);
+  assert.match(page, /window\.addEventListener\("blur", handleWindowBlur\)/);
+  assert.match(page, /Date\.now\(\) - lastWindowBlurAtRef\.current <= APP_SWITCH_BLUR_WINDOW_MS/);
+  assert.match(page, /画面オフは離脱に数えません/);
+  assert.match(page, /問題画面だけを学習中とし/);
   assert.match(page, /!jukuModeActive/);
   assert.match(page, /finishAwayPeriod/);
   assert.match(page, /stateUpdatedAtMs: Date\.now\(\)/);
   assert.match(page, /Math\.floor\(\(now - focusLastTickAtRef\.current\) \/ 1000\)/);
+  assert.match(page, /ACTIVE_STOPWATCH_STORAGE_KEY/);
+  assert.match(page, /stopwatchRestoredForRef/);
+  assert.match(page, /baseSeconds \+ elapsedSinceSave/);
+  assert.match(page, /window\.addEventListener\("pagehide", handlePageHide\)/);
   assert.match(presenceHelper, /study_session_totals/);
   assert.match(presenceHelper, /presence\.mode === "塾"/);
   assert.match(presenceHelper, /is_juku = 0/);

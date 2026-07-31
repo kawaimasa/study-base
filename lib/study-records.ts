@@ -43,6 +43,14 @@ export async function ensureStudyRecordTables(db: D1Database) {
       UNIQUE (student_id, question_key)
     )`),
     db.prepare("CREATE INDEX IF NOT EXISTS question_deliveries_student_subject_idx ON question_deliveries(student_id, subject)"),
+    db.prepare(`CREATE TABLE IF NOT EXISTS question_catalog (
+      question_id TEXT PRIMARY KEY,
+      question_key TEXT NOT NULL,
+      subject TEXT NOT NULL,
+      question_json TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`),
+    db.prepare("CREATE INDEX IF NOT EXISTS question_catalog_subject_idx ON question_catalog(subject)"),
     db.prepare(`CREATE TABLE IF NOT EXISTS practice_attempts (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       student_id TEXT NOT NULL,
@@ -103,6 +111,15 @@ export async function recordQuestionDeliveries(db: D1Database, studentId: string
   }
   if (unique.size === 0) return;
   await db.batch([...unique.values()].flatMap((question) => [
+    db.prepare(`INSERT INTO question_catalog
+      (question_id, question_key, subject, question_json, updated_at)
+      VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(question_id) DO UPDATE SET
+        question_key = excluded.question_key,
+        subject = excluded.subject,
+        question_json = excluded.question_json,
+        updated_at = CURRENT_TIMESTAMP`)
+      .bind(question.id, question.key, question.subject, JSON.stringify(question.payload)),
     db.prepare(`INSERT OR IGNORE INTO question_deliveries
       (student_id, question_id, question_key, subject) VALUES (?, ?, ?, ?)`)
       .bind(studentId, question.id, question.key, question.subject),
@@ -159,6 +176,15 @@ function buildAttemptStatements(db: D1Database, studentId: string, attempt: Prac
   assertQuestion(question);
   if (result !== "correct" && result !== "wrong") throw new Error("invalid grading result");
   const statements = [
+    db.prepare(`INSERT INTO question_catalog
+      (question_id, question_key, subject, question_json, updated_at)
+      VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(question_id) DO UPDATE SET
+        question_key = excluded.question_key,
+        subject = excluded.subject,
+        question_json = excluded.question_json,
+        updated_at = CURRENT_TIMESTAMP`)
+      .bind(question.id, question.key, question.subject, JSON.stringify(question.payload)),
     db.prepare(`INSERT OR IGNORE INTO question_deliveries
       (student_id, question_id, question_key, subject, first_delivered_at, last_delivered_at)
       VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`)

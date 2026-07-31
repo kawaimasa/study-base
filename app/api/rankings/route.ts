@@ -122,6 +122,9 @@ export async function GET(request: Request) {
     startDate,
     endDate: today,
     myRank: entries.find((entry) => entry.isMe)?.rank ?? null,
-    entries,
+    // Other students' names and individual study records are admin-only.
+    // The student endpoint calculates the rank across the whole class, but
+    // returns only the authenticated student's own row.
+    entries: entries.filter((entry) => entry.isMe),
   });
 }

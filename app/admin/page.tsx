@@ -75,6 +75,7 @@ export default function AdminPage() {
   const [testStartsAt, setTestStartsAt] = useState(defaultTestStart);
   const [testDuration, setTestDuration] = useState(30);
   const [testQuestionCount, setTestQuestionCount] = useState(25);
+  const [testQuestionSource, setTestQuestionSource] = useState<"correct" | "smart">("correct");
   const [testSubjects, setTestSubjects] = useState<string[]>(["国語", "数学", "英語", "理科", "社会"]);
   const [testSaving, setTestSaving] = useState(false);
   const [testMessage, setTestMessage] = useState("");
@@ -198,6 +199,7 @@ export default function AdminPage() {
           durationMinutes: testDuration,
           questionCount: testQuestionCount,
           subjects: testSubjects,
+          questionSource: testQuestionSource,
         }),
       });
       const data = await response.json();
@@ -271,9 +273,10 @@ export default function AdminPage() {
             <form className="weekly-test-form" onSubmit={createWeeklyTest}>
               <h3>新しいテストを作成</h3>
               <label><span>テスト名</span><input value={testTitle} onChange={(event) => setTestTitle(event.target.value)} maxLength={80} required /></label>
+              <label><span>出題元</span><select value={testQuestionSource} onChange={(event) => setTestQuestionSource(event.target.value === "smart" ? "smart" : "correct")}><option value="correct">過去7日間に正解した問題</option><option value="smart">苦手・重要問題を優先</option></select></label>
               <div className="weekly-form-row"><label><span>開始日時</span><input type="datetime-local" value={testStartsAt} onChange={(event) => setTestStartsAt(event.target.value)} required /></label><label><span>制限時間</span><input type="number" min="5" max="180" value={testDuration} onChange={(event) => setTestDuration(Number(event.target.value))} required /><small>分</small></label><label><span>問題数</span><input type="number" min="5" max="50" value={testQuestionCount} onChange={(event) => setTestQuestionCount(Number(event.target.value))} required /><small>問</small></label></div>
               <fieldset><legend>出題科目</legend><div className="weekly-subject-checks">{["国語", "数学", "英語", "理科", "社会"].map((subject) => <label key={subject}><input type="checkbox" checked={testSubjects.includes(subject)} onChange={(event) => setTestSubjects((current) => event.target.checked ? [...current, subject] : current.filter((item) => item !== subject))} /><span>{subject}</span></label>)}</div></fieldset>
-              <p>過去7日間でみんなが間違えた問題、重要問題、解いた回数が少ない単元を優先して自動構成します。データが少ない時は重要問題を中心にバランスよく出題します。</p>
+              <p>{testQuestionSource === "correct" ? "過去7日間に生徒が正解した問題から、科目の偏りを抑えて週末の定着確認テストを作成します。問題が足りない場合は重要問題で補います。" : "過去7日間でみんなが間違えた問題、重要問題、解いた回数が少ない単元を優先して自動構成します。"}</p>
               <button className="primary-button" disabled={testSaving || testSubjects.length === 0}>{testSaving ? "作成中…" : "一斉テストを作成・公開"}</button>
               {testMessage && <div className="weekly-test-message" role="status">{testMessage}</div>}
             </form>

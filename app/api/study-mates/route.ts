@@ -25,6 +25,27 @@ export async function GET(request: Request) {
       FROM practice_attempts
       WHERE date(attempted_at, '+9 hours') = ?
       GROUP BY student_id
+    ), ranked_live_presence AS (
+      SELECT
+        student_id,
+        status,
+        mode,
+        subject,
+        detail,
+        started_at_ms,
+        active_seconds,
+        last_seen_at_ms,
+        ROW_NUMBER() OVER (
+          PARTITION BY student_id
+          ORDER BY
+            CASE WHEN status = 'studying' THEN 0 ELSE 1 END,
+            last_seen_at_ms DESC,
+            started_at_ms DESC
+        ) AS session_priority
+      FROM study_session_totals
+      WHERE last_seen_at_ms >= ? AND status IN ('studying', 'away')
+    ), live_presence AS (
+      SELECT * FROM ranked_live_presence WHERE session_priority = 1
     )
     SELECT
       u.id,
@@ -43,11 +64,11 @@ export async function GET(request: Request) {
     LEFT JOIN daily_summaries s ON s.student_id = u.id AND s.summary_date = ?
     LEFT JOIN session_focus sf ON sf.student_id = u.id
     LEFT JOIN attempts a ON a.student_id = u.id
-    LEFT JOIN study_presence p ON p.student_id = u.id
-    WHERE u.is_active = 1
+    LEFT JOIN live_presence p ON p.student_id = u.id
+    WHERE u.is_active = 1 AND u.id = ?
     ORDER BY
-      CASE WHEN p.status = 'studying' AND p.last_seen_at_ms >= ? THEN 0
-           WHEN p.status = 'away' AND p.last_seen_at_ms >= ? THEN 1
+      CASE WHEN p.status = 'studying' THEN 0
+           WHEN p.status = 'away' THEN 1
            WHEN (CASE WHEN sf.student_id IS NOT NULL THEN COALESCE(sf.focus_seconds, 0) ELSE COALESCE(s.focus_seconds, 0) END) > 0
              OR (CASE WHEN a.student_id IS NOT NULL THEN COALESCE(a.questions_solved, 0) ELSE COALESCE(s.questions_solved, 0) END) > 0 THEN 2
            ELSE 3 END,
@@ -55,7 +76,7 @@ export async function GET(request: Request) {
       (CASE WHEN sf.student_id IS NOT NULL THEN COALESCE(sf.focus_seconds, 0) ELSE COALESCE(s.focus_seconds, 0) END) DESC,
       u.created_at DESC
     LIMIT 100`)
-    .bind(today, today, today, liveAfterMs, liveAfterMs, user.id)
+    .bind(today, today, liveAfterMs, today, user.id, user.id)
     .all<Record<string, unknown>>();
 
   return Response.json({

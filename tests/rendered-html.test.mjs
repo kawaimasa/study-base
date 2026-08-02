@@ -264,11 +264,6 @@ test("focus, leave and juku time survive navigation without inflating verified s
   assert.match(page, /const handleWindowBlur = \(\) => \{[\s\S]*startAwayPeriod\(jukuModeActive\)/);
   assert.match(page, /window\.addEventListener\("focus", handleWindowFocus\)/);
   assert.match(page, /const handleWindowFocus = \(\) => \{[\s\S]*finishAwayPeriod\(\)/);
-  assert.match(page, /const \[audioCheckRequired, setAudioCheckRequired\] = useState\(false\)/);
-  assert.match(page, /startAwayPeriod\(jukuModeActive\);\s*requireAudioCheck\(\)/);
-  assert.match(page, /else if \(!audioCheckRequiredRef\.current\) finishAwayPeriod\(\)/);
-  assert.match(page, /音楽を止めた・集中を再開/);
-  assert.match(page, /この確認中の時間は集中時間に入らず、離脱時間として記録されます/);
   assert.match(page, /Date\.now\(\) - lastWindowBlurAtRef\.current <= APP_SWITCH_BLUR_WINDOW_MS/);
   assert.match(page, /画面オフは離脱に数えません/);
   assert.match(page, /問題画面だけを学習中とし/);

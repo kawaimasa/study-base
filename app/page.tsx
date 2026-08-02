@@ -539,7 +539,6 @@ export default function Home() {
   const [jukuAwaySeconds, setJukuAwaySeconds] = useState(0);
   const [jukuAwayCount, setJukuAwayCount] = useState(0);
   const [awayStatsLoaded, setAwayStatsLoaded] = useState(false);
-  const [audioCheckRequired, setAudioCheckRequired] = useState(false);
   const [baseTodayFocusSeconds, setBaseTodayFocusSeconds] = useState(0);
   const [trackedFocusSeconds, setTrackedFocusSeconds] = useState(0);
   const [subjectProgressCounts, setSubjectProgressCounts] = useState<SubjectProgressMap>(defaultSubjectProgress);
@@ -573,8 +572,6 @@ export default function Home() {
     || (view === "weekly-test" && weeklyStarted && weeklyTest?.kind === "active");
   const jukuNonProblemAway = jukuModeActive && !problemSolvingActive;
   const sessionActiveRef = useRef(sessionActive);
-  const previousSessionActiveRef = useRef(false);
-  const audioCheckRequiredRef = useRef(false);
   const presenceSessionIdRef = useRef<string | null>(null);
   const presenceStartedAtRef = useRef(0);
   const presenceActiveSecondsRef = useRef(0);
@@ -660,21 +657,6 @@ export default function Home() {
     persistAwayStats(nextAway, true);
     if (atJuku) setJukuAwayCount(nextAway.jukuAwayCount);
     else setAwayCount(nextAway.awayCount);
-  };
-
-  const requireAudioCheck = () => {
-    audioCheckRequiredRef.current = true;
-    setAudioCheckRequired(true);
-  };
-
-  const confirmAudioStopped = () => {
-    audioCheckRequiredRef.current = false;
-    setAudioCheckRequired(false);
-    focusLastTickAtRef.current = Date.now();
-    presenceLastTickAtRef.current = Date.now();
-    lastStudyActionAtRef.current = Date.now();
-    if (jukuNonProblemAway) startAwayPeriod(true);
-    else finishAwayPeriod();
   };
 
   const loadWeeklyTest = async () => {
@@ -811,21 +793,7 @@ export default function Home() {
 
   useEffect(() => {
     sessionActiveRef.current = sessionActive;
-    const justStarted = sessionActive && !previousSessionActiveRef.current;
-    previousSessionActiveRef.current = sessionActive;
-    if (justStarted) {
-      // A normal web page cannot inspect whether Spotify or another native app
-      // is still playing. Keep the session in away time until the student
-      // explicitly confirms that background audio has been stopped.
-      requireAudioCheck();
-      startAwayPeriod(jukuModeActive);
-      return;
-    }
-    if (!sessionActive) {
-      audioCheckRequiredRef.current = false;
-      setAudioCheckRequired(false);
-      finishAwayPeriod();
-    }
+    if (!sessionActive) finishAwayPeriod();
   }, [sessionActive]);
 
   useEffect(() => {
@@ -834,7 +802,7 @@ export default function Home() {
       startAwayPeriod(true);
       return;
     }
-    if (!document.hidden && !audioCheckRequiredRef.current) finishAwayPeriod();
+    if (!document.hidden) finishAwayPeriod();
   }, [jukuNonProblemAway, sessionActive]);
 
   useEffect(() => {
@@ -908,7 +876,6 @@ export default function Home() {
       // visibilitychange event. Window blur is the reliable app-switch edge,
       // so begin the away period here and finish it when focus returns.
       startAwayPeriod(jukuModeActive);
-      requireAudioCheck();
     };
     const handleWindowFocus = () => {
       // Timers are paused by mobile browsers while another app or the screen
@@ -916,7 +883,7 @@ export default function Home() {
       focusLastTickAtRef.current = Date.now();
       presenceLastTickAtRef.current = Date.now();
       if (jukuNonProblemAway) startAwayPeriod(true);
-      else if (!audioCheckRequiredRef.current) finishAwayPeriod();
+      else finishAwayPeriod();
     };
     const handleVisibilityChange = () => {
       if (document.hidden) {
@@ -2766,17 +2733,6 @@ export default function Home() {
           </section>
         )}
       </div>
-
-      {audioCheckRequired && sessionActive && !studentLocked && <div className="timer-prompt-backdrop audio-check-backdrop">
-        <section className="timer-prompt audio-check-prompt" role="dialog" aria-modal="true" aria-labelledby="audio-check-title">
-          <span className="timer-prompt-icon">♫</span>
-          <p className="eyebrow">FOCUS CHECK</p>
-          <h2 id="audio-check-title">音楽を止めてから、集中を再開しよう。</h2>
-          <p>Spotify・YouTube・音楽アプリを停止してください。この確認中の時間は集中時間に入らず、離脱時間として記録されます。</p>
-          <button className="primary-button big" onClick={confirmAudioStopped}>音楽を止めた・集中を再開 ▶</button>
-          <small>Webアプリから他のアプリの再生状態は直接確認できないため、毎回この確認を行います。</small>
-        </section>
-      </div>}
 
       {subjectPickerOpen && <div className="timer-prompt-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setSubjectPickerOpen(false); }}>
         <section className="timer-prompt subject-picker-prompt" role="dialog" aria-modal="true" aria-labelledby="subject-picker-title">

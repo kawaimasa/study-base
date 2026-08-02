@@ -57,8 +57,8 @@ export async function GET(request: Request) {
       SELECT student_id, summary_date FROM attempt_daily
     ), totals AS (
       SELECT d.student_id,
-        COALESCE(SUM(CASE WHEN sf.student_id IS NOT NULL THEN COALESCE(sf.focus_seconds, 0) ELSE COALESCE(s.focus_seconds, 0) END), 0) AS focus_seconds,
-        COALESCE(SUM(CASE WHEN a.student_id IS NOT NULL THEN COALESCE(a.questions_solved, 0) ELSE COALESCE(s.questions_solved, 0) END), 0) AS questions_solved
+        COALESCE(SUM(MAX(COALESCE(sf.focus_seconds, 0), COALESCE(s.focus_seconds, 0))), 0) AS focus_seconds,
+        COALESCE(SUM(MAX(COALESCE(a.questions_solved, 0), COALESCE(s.questions_solved, 0))), 0) AS questions_solved
       FROM days d
       LEFT JOIN daily_summaries s ON s.student_id = d.student_id AND s.summary_date = d.summary_date
       LEFT JOIN session_daily sf ON sf.student_id = d.student_id AND sf.summary_date = d.summary_date
@@ -117,14 +117,23 @@ export async function GET(request: Request) {
     };
   });
 
+  const publicEntries = entries.map((entry, index) => entry.isMe
+    ? entry
+    : {
+        ...entry,
+        id: `classmate-${index + 1}`,
+        displayName: `仲間${index + 1}`,
+        questionsSolved: 0,
+        streak: 0,
+      });
+
   return Response.json({
     period,
     startDate,
     endDate: today,
     myRank: entries.find((entry) => entry.isMe)?.rank ?? null,
-    // Other students' names and individual study records are admin-only.
-    // The student endpoint calculates the rank across the whole class, but
-    // returns only the authenticated student's own row.
-    entries: entries.filter((entry) => entry.isMe),
+    // The leaderboard remains useful without exposing classmates' registered
+    // names or detailed study records to another student.
+    entries: publicEntries,
   });
 }

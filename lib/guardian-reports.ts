@@ -167,7 +167,7 @@ export async function sendMorningGuardianReports(env: GuardianReportEnv, schedul
     )
     SELECT p.student_id, p.student_name, p.parent_line_user_id,
       COALESCE(s.summary_date, ?) AS summary_date,
-      CASE WHEN vf.student_id IS NOT NULL THEN COALESCE(vf.focus_seconds, 0) ELSE COALESCE(s.focus_seconds, 0) END AS focus_seconds,
+      MAX(COALESCE(vf.focus_seconds, 0), COALESCE(s.focus_seconds, 0)) AS focus_seconds,
       CASE WHEN va.student_id IS NOT NULL THEN COALESCE(va.away_seconds, 0) ELSE COALESCE(s.away_seconds, 0) END AS away_seconds,
       CASE WHEN vt.student_id IS NOT NULL THEN COALESCE(vt.questions_solved, 0) ELSE COALESCE(s.questions_solved, 0) END AS questions_solved,
       CASE WHEN vt.student_id IS NOT NULL THEN COALESCE(vt.correct_answers, 0) ELSE COALESCE(s.correct_answers, 0) END AS correct_answers,

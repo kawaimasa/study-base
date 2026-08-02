@@ -36,9 +36,9 @@ export async function GET(request: Request) {
       u.display_name,
       u.created_at,
       u.is_active,
-      CASE WHEN sf.student_id IS NOT NULL THEN COALESCE(sf.focus_seconds, 0) ELSE COALESCE(s.focus_seconds, 0) END AS focus_seconds,
-      CASE WHEN a.student_id IS NOT NULL THEN COALESCE(a.questions_solved, 0) ELSE COALESCE(s.questions_solved, 0) END AS questions_solved,
-      CASE WHEN a.student_id IS NOT NULL THEN COALESCE(a.correct_answers, 0) ELSE COALESCE(s.correct_answers, 0) END AS correct_answers,
+      MAX(COALESCE(sf.focus_seconds, 0), COALESCE(s.focus_seconds, 0)) AS focus_seconds,
+      MAX(COALESCE(a.questions_solved, 0), COALESCE(s.questions_solved, 0)) AS questions_solved,
+      MAX(COALESCE(a.correct_answers, 0), COALESCE(s.correct_answers, 0)) AS correct_answers,
       CASE WHEN g.parent_line_user_id IS NOT NULL THEN 1 ELSE 0 END AS guardian_connected,
       CASE WHEN g.parent_line_user_id IS NULL AND g.pairing_used_at IS NULL AND datetime(g.pairing_expires_at) > CURRENT_TIMESTAMP THEN g.pairing_code ELSE NULL END AS pairing_code,
       COALESCE(g.notifications_enabled, 0) AS notifications_enabled

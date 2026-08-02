@@ -71,6 +71,12 @@ type RegisteredStudyMate = {
   activeSeconds: number;
 };
 
+type StudyMateSummary = {
+  registeredCount: number;
+  studyingCount: number;
+  studiedTodayCount: number;
+};
+
 type RankingEntry = {
   id: string;
   displayName: string;
@@ -541,6 +547,7 @@ export default function Home() {
   const [rankingRows, setRankingRows] = useState<RankingEntry[]>([]);
   const [rankingLoading, setRankingLoading] = useState(false);
   const [registeredStudyMates, setRegisteredStudyMates] = useState<RegisteredStudyMate[]>([]);
+  const [studyMateSummary, setStudyMateSummary] = useState<StudyMateSummary>({ registeredCount: 0, studyingCount: 0, studiedTodayCount: 0 });
   const [presenceActiveSeconds, setPresenceActiveSeconds] = useState(0);
   const [seenQuestionIds, setSeenQuestionIds] = useState<Record<string, string[]>>({});
   const [loginDaysCount, setLoginDaysCount] = useState(1);
@@ -875,8 +882,15 @@ export default function Home() {
           startAwayPeriod(jukuModeActive);
         }
       }
-      else if (jukuNonProblemAway) startAwayPeriod(true);
-      else finishAwayPeriod();
+      else {
+        // Timers are paused by mobile browsers while the screen is off. Reset
+        // both tick anchors before resuming so the suspended wall-clock time is
+        // never added to focused study time.
+        focusLastTickAtRef.current = Date.now();
+        presenceLastTickAtRef.current = Date.now();
+        if (jukuNonProblemAway) startAwayPeriod(true);
+        else finishAwayPeriod();
+      }
     };
     const handlePageHide = () => {
       if (!jukuModeActive || Date.now() - lastWindowBlurAtRef.current <= APP_SWITCH_BLUR_WINDOW_MS) {
@@ -1289,6 +1303,13 @@ export default function Home() {
         .then((response) => response.ok ? response.json() : null)
         .then((data) => {
           if (Array.isArray(data?.students)) setRegisteredStudyMates(data.students as RegisteredStudyMate[]);
+          if (data?.summary && typeof data.summary === "object") {
+            setStudyMateSummary({
+              registeredCount: Math.max(0, Number(data.summary.registeredCount ?? 0)),
+              studyingCount: Math.max(0, Number(data.summary.studyingCount ?? 0)),
+              studiedTodayCount: Math.max(0, Number(data.summary.studiedTodayCount ?? 0)),
+            });
+          }
         })
         .catch(() => undefined);
     };
@@ -1390,7 +1411,11 @@ export default function Home() {
       setPresenceActiveSeconds(presenceActiveSecondsRef.current);
     }, 250);
     const heartbeatTimer = window.setInterval(() => sendPresence(document.hidden ? "away" : "studying"), 15_000);
-    const handleVisibility = () => sendPresence(document.hidden ? "away" : "studying", document.hidden);
+    const handleVisibility = () => {
+      presenceLastTickAtRef.current = Date.now();
+      focusLastTickAtRef.current = Date.now();
+      sendPresence(document.hidden ? "away" : "studying", document.hidden);
+    };
     const handlePageHide = () => sendPresence("away", true);
     document.addEventListener("visibilitychange", handleVisibility);
     window.addEventListener("pagehide", handlePageHide);
@@ -1671,7 +1696,10 @@ export default function Home() {
       };
     });
   }, [freeStudyAction, registeredStudyMates, selectedSubject, sessionActive, timerMode, view]);
-  const studyingMateCount = studyMateRows.filter((mate) => mate.status === "studying").length;
+  const studyingMateCount = Math.max(
+    studyMateSummary.studyingCount,
+    sessionActive ? 1 : 0,
+  );
 
   const rankingEntries = useMemo(() => {
     const palette = ["purple", "blue", "coral", "green", "yellow"] as const;
@@ -1806,6 +1834,13 @@ export default function Home() {
             .then((response) => response.ok ? response.json() : null)
             .then((data) => {
               if (Array.isArray(data?.students)) setRegisteredStudyMates(data.students as RegisteredStudyMate[]);
+              if (data?.summary && typeof data.summary === "object") {
+                setStudyMateSummary({
+                  registeredCount: Math.max(0, Number(data.summary.registeredCount ?? 0)),
+                  studyingCount: Math.max(0, Number(data.summary.studyingCount ?? 0)),
+                  studiedTodayCount: Math.max(0, Number(data.summary.studiedTodayCount ?? 0)),
+                });
+              }
             })
             .catch(() => undefined);
         })
@@ -2388,7 +2423,7 @@ export default function Home() {
             <section className="hero">
               <div className="hero-copy">
                 <p className="eyebrow">TODAY&apos;S MISSION</p>
-                <div className="hero-pills"><span>● {studyMateRows.length}人が勉強中</span><span>今日も一歩、前へ</span></div>
+                <div className="hero-pills"><span>● {studyingMateCount}人が勉強中</span><span>今日も一歩、前へ</span></div>
                 <h1>今日も、<br /><em>{authUser.displayName}</em>の伸びしろが<br />動き出す。</h1>
                 <p>勉強も、仲間も、今日しかない。未来の自分へ、最高の一日を。</p>
               </div>
@@ -2458,7 +2493,7 @@ export default function Home() {
               </article>
               <article className="friends-card">
                 <div className="section-heading compact"><div><p className="eyebrow">STUDY MATES</p><h2>みんなの今日が、動いてる。</h2></div><span className={`online${studyingMateCount === 0 ? " offline" : ""}`}>{studyingMateCount}人が勉強中</span></div>
-                <p className="bot-study-note">登録メンバーだけを、実際の学習状態と時間で表示します。</p>
+                <p className="bot-study-note">登録{studyMateSummary.registeredCount}人・今日取り組んだ人{studyMateSummary.studiedTodayCount}人。ほかの生徒は個人名を出さず集計します。</p>
                 <div className="study-live-head"><span>仲間</span><span>開始</span><span>学習時間</span></div>
                 <div className="study-live-list">
                   {studyMateRows.map((mate) => (
@@ -2469,7 +2504,7 @@ export default function Home() {
                       <span className="elapsed-time">{mate.status === "not_started" ? "—" : formatStudyTime(mate.minutes)}</span>
                     </div>
                   ))}
-                  {studyMateRows.length === 0 && <p className="study-live-empty">登録メンバーがまだいません。</p>}
+                  {studyMateRows.length === 0 && <p className="study-live-empty">自分の学習状況を読み込んでいます。</p>}
                 </div>
               </article>
             </section>

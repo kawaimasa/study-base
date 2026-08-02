@@ -13,7 +13,7 @@ test("live study roster uses registered students and durable presence", async ()
   ]);
 
   assert.match(page, /みんなの今日が、動いてる。/);
-  assert.match(page, /登録メンバーだけを、実際の学習状態と時間で表示します。/);
+  assert.match(page, /登録\{studyMateSummary\.registeredCount\}人・今日取り組んだ人/);
   assert.doesNotMatch(page, /const liveStudyMates/);
   assert.match(page, /15_000/);
   assert.match(page, /navigator\.sendBeacon\("\/api\/study-presence"/);
@@ -23,7 +23,9 @@ test("live study roster uses registered students and durable presence", async ()
   assert.match(matesRoute, /LEFT JOIN live_presence/);
   assert.match(matesRoute, /studied_today/);
   assert.match(matesRoute, /FROM device_users u/);
-  assert.match(matesRoute, /u\.id = \?/);
+  assert.match(matesRoute, /students: students\.filter\(\(student\) => student\.isMe\)/);
+  assert.match(matesRoute, /registeredCount: students\.length/);
+  assert.match(matesRoute, /studyingCount: students\.filter/);
   assert.match(matesRoute, /study_session_totals/);
   assert.match(matesRoute, /practice_attempts/);
   assert.doesNotMatch(matesRoute, /LIMIT 6\b/);
@@ -64,14 +66,15 @@ test("ranking is calculated from durable student records", async () => {
   assert.doesNotMatch(page, /昨日より 1 UP/);
   assert.match(page, /\/api\/rankings\?period=/);
   assert.match(page, /myRanking\?\.rank/);
-  assert.match(rankingsRoute, /SUM\(CASE WHEN sf\.student_id IS NOT NULL/);
-  assert.match(rankingsRoute, /SUM\(CASE WHEN a\.student_id IS NOT NULL/);
+  assert.match(rankingsRoute, /SUM\(MAX\(COALESCE\(sf\.focus_seconds/);
+  assert.match(rankingsRoute, /SUM\(MAX\(COALESCE\(a\.questions_solved/);
   assert.match(rankingsRoute, /study_session_totals/);
   assert.match(rankingsRoute, /practice_attempts/);
   assert.match(rankingsRoute, /FROM device_users u/);
   assert.match(rankingsRoute, /student_login_days/);
   assert.match(rankingsRoute, /score === previousScore \? previousRank : index \+ 1/);
-  assert.match(rankingsRoute, /entries: entries\.filter\(\(entry\) => entry\.isMe\)/);
+  assert.match(rankingsRoute, /displayName: `仲間\$\{index \+ 1\}`/);
+  assert.match(rankingsRoute, /entries: publicEntries/);
 });
 
 test("practice grading and mistake reviews are persisted idempotently in D1", async () => {

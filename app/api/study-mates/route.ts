@@ -51,8 +51,8 @@ export async function GET(request: Request) {
       u.id,
       u.display_name,
       u.created_at,
-      CASE WHEN sf.student_id IS NOT NULL THEN COALESCE(sf.focus_seconds, 0) ELSE COALESCE(s.focus_seconds, 0) END AS focus_seconds,
-      CASE WHEN a.student_id IS NOT NULL THEN COALESCE(a.questions_solved, 0) ELSE COALESCE(s.questions_solved, 0) END AS questions_solved,
+      MAX(COALESCE(sf.focus_seconds, 0), COALESCE(s.focus_seconds, 0)) AS focus_seconds,
+      MAX(COALESCE(a.questions_solved, 0), COALESCE(s.questions_solved, 0)) AS questions_solved,
       p.status AS presence_status,
       p.mode AS presence_mode,
       p.subject AS presence_subject,
@@ -65,48 +65,56 @@ export async function GET(request: Request) {
     LEFT JOIN session_focus sf ON sf.student_id = u.id
     LEFT JOIN attempts a ON a.student_id = u.id
     LEFT JOIN live_presence p ON p.student_id = u.id
-    WHERE u.is_active = 1 AND u.id = ?
+    WHERE u.is_active = 1
     ORDER BY
       CASE WHEN p.status = 'studying' THEN 0
            WHEN p.status = 'away' THEN 1
-           WHEN (CASE WHEN sf.student_id IS NOT NULL THEN COALESCE(sf.focus_seconds, 0) ELSE COALESCE(s.focus_seconds, 0) END) > 0
-             OR (CASE WHEN a.student_id IS NOT NULL THEN COALESCE(a.questions_solved, 0) ELSE COALESCE(s.questions_solved, 0) END) > 0 THEN 2
+           WHEN MAX(COALESCE(sf.focus_seconds, 0), COALESCE(s.focus_seconds, 0)) > 0
+             OR MAX(COALESCE(a.questions_solved, 0), COALESCE(s.questions_solved, 0)) > 0 THEN 2
            ELSE 3 END,
       CASE WHEN u.id = ? THEN 0 ELSE 1 END,
-      (CASE WHEN sf.student_id IS NOT NULL THEN COALESCE(sf.focus_seconds, 0) ELSE COALESCE(s.focus_seconds, 0) END) DESC,
+      MAX(COALESCE(sf.focus_seconds, 0), COALESCE(s.focus_seconds, 0)) DESC,
       u.created_at DESC
     LIMIT 100`)
-    .bind(today, today, liveAfterMs, today, user.id, user.id)
+    .bind(today, today, liveAfterMs, today, user.id)
     .all<Record<string, unknown>>();
+
+  const students = results.map((row) => {
+    const isFresh = Number(row.presence_last_seen_at_ms ?? 0) >= liveAfterMs;
+    const rawStatus = String(row.presence_status ?? "stopped");
+    const focusSeconds = Number(row.focus_seconds ?? 0);
+    const questionsSolved = Number(row.questions_solved ?? 0);
+    const status = isFresh && rawStatus === "studying"
+      ? "studying"
+      : isFresh && rawStatus === "away"
+        ? "away"
+        : focusSeconds > 0 || questionsSolved > 0
+          ? "studied_today"
+          : "not_started";
+    return {
+      id: String(row.id),
+      displayName: String(row.display_name),
+      focusSeconds,
+      questionsSolved,
+      isMe: String(row.id) === user.id,
+      status,
+      mode: String(row.presence_mode ?? ""),
+      subject: String(row.presence_subject ?? ""),
+      detail: String(row.presence_detail ?? ""),
+      startedAtMs: status === "studying" || status === "away" ? Number(row.presence_started_at_ms ?? 0) : 0,
+      activeSeconds: status === "studying" || status === "away" ? Number(row.presence_active_seconds ?? 0) : 0,
+    };
+  });
 
   return Response.json({
     today,
-    students: results
-      .map((row) => {
-        const isFresh = Number(row.presence_last_seen_at_ms ?? 0) >= liveAfterMs;
-        const rawStatus = String(row.presence_status ?? "stopped");
-        const focusSeconds = Number(row.focus_seconds ?? 0);
-        const questionsSolved = Number(row.questions_solved ?? 0);
-        const status = isFresh && rawStatus === "studying"
-          ? "studying"
-          : isFresh && rawStatus === "away"
-            ? "away"
-            : focusSeconds > 0 || questionsSolved > 0
-              ? "studied_today"
-              : "not_started";
-        return {
-          id: String(row.id),
-          displayName: String(row.display_name),
-          focusSeconds,
-          questionsSolved,
-          isMe: String(row.id) === user.id,
-          status,
-          mode: String(row.presence_mode ?? ""),
-          subject: String(row.presence_subject ?? ""),
-          detail: String(row.presence_detail ?? ""),
-          startedAtMs: status === "studying" || status === "away" ? Number(row.presence_started_at_ms ?? 0) : 0,
-          activeSeconds: status === "studying" || status === "away" ? Number(row.presence_active_seconds ?? 0) : 0,
-        };
-      }),
+    // Students see their own row plus class-level counts. Names and detailed
+    // activity for classmates remain admin-only.
+    students: students.filter((student) => student.isMe),
+    summary: {
+      registeredCount: students.length,
+      studyingCount: students.filter((student) => student.status === "studying").length,
+      studiedTodayCount: students.filter((student) => student.status !== "not_started").length,
+    },
   });
 }

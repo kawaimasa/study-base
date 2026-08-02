@@ -114,6 +114,14 @@ export default function AdminPage() {
       });
   }, []);
 
+  useEffect(() => {
+    if (status !== "authenticated") return;
+    const timer = window.setInterval(() => {
+      void loadDashboard().catch(() => undefined);
+    }, 15_000);
+    return () => window.clearInterval(timer);
+  }, [status]);
+
   const submit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setSubmitting(true);

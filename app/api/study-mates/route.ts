@@ -108,9 +108,7 @@ export async function GET(request: Request) {
 
   return Response.json({
     today,
-    // Students see their own row plus class-level counts. Names and detailed
-    // activity for classmates remain admin-only.
-    students: students.filter((student) => student.isMe),
+    students,
     summary: {
       registeredCount: students.length,
       studyingCount: students.filter((student) => student.status === "studying").length,

@@ -2493,7 +2493,7 @@ export default function Home() {
               </article>
               <article className="friends-card">
                 <div className="section-heading compact"><div><p className="eyebrow">STUDY MATES</p><h2>みんなの今日が、動いてる。</h2></div><span className={`online${studyingMateCount === 0 ? " offline" : ""}`}>{studyingMateCount}人が勉強中</span></div>
-                <p className="bot-study-note">登録{studyMateSummary.registeredCount}人・今日取り組んだ人{studyMateSummary.studiedTodayCount}人。ほかの生徒は個人名を出さず集計します。</p>
+                <p className="bot-study-note">登録{studyMateSummary.registeredCount}人・今日取り組んだ人{studyMateSummary.studiedTodayCount}人。登録された名前と今日の学習状況を表示します。</p>
                 <div className="study-live-head"><span>仲間</span><span>開始</span><span>学習時間</span></div>
                 <div className="study-live-list">
                   {studyMateRows.map((mate) => (
@@ -2696,7 +2696,7 @@ export default function Home() {
                 <article key={person.id} className={person.me ? "me" : ""}><span className={`rank-number rank-${person.rank}`}>{person.rank}</span><span className={`friend-avatar ${person.color}`}>{person.name[0]}</span><div><strong>{person.name}{person.me && <em>YOU</em>}</strong><small>{person.streak > 0 ? `🔥 ${person.streak}日連続` : `${person.questionsSolved}問`}</small></div><span className="rank-time">{person.time}<small>集中時間</small></span></article>
               ))}
             </div>
-            <p className="privacy-note">ニックネームだけで参加。個人情報は表示されません。</p>
+            <p className="privacy-note">登録された名前と学習時間を、メンバー同士で共有します。</p>
           </section>
         )}
       </div>

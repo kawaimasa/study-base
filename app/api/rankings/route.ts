@@ -117,23 +117,11 @@ export async function GET(request: Request) {
     };
   });
 
-  const publicEntries = entries.map((entry, index) => entry.isMe
-    ? entry
-    : {
-        ...entry,
-        id: `classmate-${index + 1}`,
-        displayName: `仲間${index + 1}`,
-        questionsSolved: 0,
-        streak: 0,
-      });
-
   return Response.json({
     period,
     startDate,
     endDate: today,
     myRank: entries.find((entry) => entry.isMe)?.rank ?? null,
-    // The leaderboard remains useful without exposing classmates' registered
-    // names or detailed study records to another student.
-    entries: publicEntries,
+    entries,
   });
 }

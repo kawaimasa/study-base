@@ -14,6 +14,7 @@ test("live study roster uses registered students and durable presence", async ()
 
   assert.match(page, /みんなの今日が、動いてる。/);
   assert.match(page, /登録\{studyMateSummary\.registeredCount\}人・今日取り組んだ人/);
+  assert.match(page, /登録された名前と今日の学習状況を表示します/);
   assert.doesNotMatch(page, /const liveStudyMates/);
   assert.match(page, /15_000/);
   assert.match(page, /navigator\.sendBeacon\("\/api\/study-presence"/);
@@ -23,7 +24,8 @@ test("live study roster uses registered students and durable presence", async ()
   assert.match(matesRoute, /LEFT JOIN live_presence/);
   assert.match(matesRoute, /studied_today/);
   assert.match(matesRoute, /FROM device_users u/);
-  assert.match(matesRoute, /students: students\.filter\(\(student\) => student\.isMe\)/);
+  assert.match(matesRoute, /students,/);
+  assert.doesNotMatch(matesRoute, /students: students\.filter/);
   assert.match(matesRoute, /registeredCount: students\.length/);
   assert.match(matesRoute, /studyingCount: students\.filter/);
   assert.match(matesRoute, /study_session_totals/);
@@ -73,8 +75,9 @@ test("ranking is calculated from durable student records", async () => {
   assert.match(rankingsRoute, /FROM device_users u/);
   assert.match(rankingsRoute, /student_login_days/);
   assert.match(rankingsRoute, /score === previousScore \? previousRank : index \+ 1/);
-  assert.match(rankingsRoute, /displayName: `仲間\$\{index \+ 1\}`/);
-  assert.match(rankingsRoute, /entries: publicEntries/);
+  assert.doesNotMatch(rankingsRoute, /displayName: `仲間\$\{index \+ 1\}`/);
+  assert.doesNotMatch(rankingsRoute, /publicEntries/);
+  assert.match(rankingsRoute, /entries,/);
 });
 
 test("practice grading and mistake reviews are persisted idempotently in D1", async () => {

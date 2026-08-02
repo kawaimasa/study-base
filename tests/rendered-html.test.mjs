@@ -261,6 +261,9 @@ test("focus, leave and juku time survive navigation without inflating verified s
   assert.match(page, /if \(jukuNonProblemAway\) \{\s*startAwayPeriod\(true\)/);
   assert.match(page, /const APP_SWITCH_BLUR_WINDOW_MS = 2_000/);
   assert.match(page, /window\.addEventListener\("blur", handleWindowBlur\)/);
+  assert.match(page, /const handleWindowBlur = \(\) => \{[\s\S]*startAwayPeriod\(jukuModeActive\)/);
+  assert.match(page, /window\.addEventListener\("focus", handleWindowFocus\)/);
+  assert.match(page, /const handleWindowFocus = \(\) => \{[\s\S]*finishAwayPeriod\(\)/);
   assert.match(page, /Date\.now\(\) - lastWindowBlurAtRef\.current <= APP_SWITCH_BLUR_WINDOW_MS/);
   assert.match(page, /画面オフは離脱に数えません/);
   assert.match(page, /問題画面だけを学習中とし/);

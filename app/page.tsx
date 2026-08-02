@@ -872,38 +872,44 @@ export default function Home() {
   useEffect(() => {
     const handleWindowBlur = () => {
       lastWindowBlurAtRef.current = Date.now();
+      // On iOS/Android, switching to another app does not always emit a
+      // visibilitychange event. Window blur is the reliable app-switch edge,
+      // so begin the away period here and finish it when focus returns.
+      startAwayPeriod(jukuModeActive);
+    };
+    const handleWindowFocus = () => {
+      // Timers are paused by mobile browsers while another app or the screen
+      // is active. Reset both anchors before resuming to avoid wall-clock drift.
+      focusLastTickAtRef.current = Date.now();
+      presenceLastTickAtRef.current = Date.now();
+      if (jukuNonProblemAway) startAwayPeriod(true);
+      else finishAwayPeriod();
     };
     const handleVisibilityChange = () => {
       if (document.hidden) {
-        // Mobile browsers do not expose a definitive "screen was turned off" event.
-        // In juku mode, only a recent window blur is treated as an app switch;
-        // visibility changes without blur are treated as screen-off and ignored.
-        if (!jukuModeActive || Date.now() - lastWindowBlurAtRef.current <= APP_SWITCH_BLUR_WINDOW_MS) {
+        // A visibility change without a preceding blur is treated as screen
+        // off, which the product rules explicitly exclude from away time.
+        if (Date.now() - lastWindowBlurAtRef.current <= APP_SWITCH_BLUR_WINDOW_MS) {
           startAwayPeriod(jukuModeActive);
         }
+        return;
       }
-      else {
-        // Timers are paused by mobile browsers while the screen is off. Reset
-        // both tick anchors before resuming so the suspended wall-clock time is
-        // never added to focused study time.
-        focusLastTickAtRef.current = Date.now();
-        presenceLastTickAtRef.current = Date.now();
-        if (jukuNonProblemAway) startAwayPeriod(true);
-        else finishAwayPeriod();
-      }
+      handleWindowFocus();
     };
     const handlePageHide = () => {
-      if (!jukuModeActive || Date.now() - lastWindowBlurAtRef.current <= APP_SWITCH_BLUR_WINDOW_MS) {
+      if (Date.now() - lastWindowBlurAtRef.current <= APP_SWITCH_BLUR_WINDOW_MS) {
         startAwayPeriod(jukuModeActive);
       }
     };
 
     window.addEventListener("blur", handleWindowBlur);
+    window.addEventListener("focus", handleWindowFocus);
     document.addEventListener("visibilitychange", handleVisibilityChange);
     window.addEventListener("pagehide", handlePageHide);
     window.addEventListener("pageshow", handleVisibilityChange);
     return () => {
       window.removeEventListener("blur", handleWindowBlur);
+      window.removeEventListener("focus", handleWindowFocus);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
       window.removeEventListener("pagehide", handlePageHide);
       window.removeEventListener("pageshow", handleVisibilityChange);

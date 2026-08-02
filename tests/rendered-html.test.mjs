@@ -154,6 +154,49 @@ test("English bank contains 50 complete sets of genuinely unique questions", asy
   assert.ok(questions.every(({ id }) => id.startsWith("EN3-")), "new ids must not collide with previously delivered English questions");
 });
 
+test("Japanese and Math banks contain 50 balanced, duplicate-free entrance-exam sets", async () => {
+  const [japanese, math] = await Promise.all([
+    readFile(new URL("public/data/kokugo.json", root), "utf8").then(JSON.parse),
+    readFile(new URL("public/data/math.json", root), "utf8").then(JSON.parse),
+  ]);
+  const normalize = (value) => String(value).normalize("NFKC").replace(/\s+/g, " ").trim().toLowerCase();
+  const expected = [
+    {
+      name: "Japanese",
+      questions: japanese,
+      prefix: "JP3-",
+      categories: { "漢字": 200, "語句": 150, "文法": 150, "古典": 100, "表現": 100, "読解": 200, "作文": 100 },
+      categoriesPerSet: 7,
+    },
+    {
+      name: "Math",
+      questions: math,
+      prefix: "MA3-",
+      categories: { "数と式": 150, "方程式": 150, "関数": 150, "図形": 250, "資料": 50, "確率": 50, "活用": 100, "証明": 50, "思考": 50 },
+      categoriesPerSet: 9,
+    },
+  ];
+
+  for (const bank of expected) {
+    const counts = new Map();
+    for (const question of bank.questions) counts.set(question.category, (counts.get(question.category) ?? 0) + 1);
+    assert.equal(bank.questions.length, 1000, `${bank.name} must contain 1000 questions`);
+    assert.equal(new Set(bank.questions.map(({ id }) => id)).size, 1000, `${bank.name} ids must be unique`);
+    assert.equal(new Set(bank.questions.map(({ question }) => normalize(question))).size, 1000, `${bank.name} prompts must be unique`);
+    assert.deepEqual(Object.fromEntries(counts), bank.categories);
+    assert.ok(bank.questions.every(({ id }) => id.startsWith(bank.prefix)), `${bank.name} must use the rebuilt id namespace`);
+    for (let batch = 1; batch <= 50; batch += 1) {
+      const set = bank.questions.filter((question) => question.batch === batch);
+      assert.equal(set.length, 20, `${bank.name} set ${batch} must contain exactly 20 questions`);
+      assert.equal(new Set(set.map(({ category }) => category)).size, bank.categoriesPerSet, `${bank.name} set ${batch} must keep its subject balance`);
+    }
+  }
+
+  assert.ok(japanese.filter(({ category }) => category === "読解").every(({ question }) => question.length >= 170), "Japanese reading passages must have enough context to assess comprehension");
+  assert.ok(math.every(({ question, answer }) => !/y=1x/.test(`${question} ${answer}`)), "Math formulas must use natural coefficient notation");
+  assert.ok(math.every(({ answer }) => !/\d+\.\d{5,}/.test(answer)), "Math answers must not expose floating-point artifacts");
+});
+
 test("focus, leave and juku time survive navigation without inflating verified study", async () => {
   const [page, guardianRoute, presenceHelper, guardianHelper] = await Promise.all([
     readFile(new URL("app/page.tsx", root), "utf8"),

@@ -137,12 +137,20 @@ test("English bank contains 50 complete sets of genuinely unique questions", asy
   assert.equal(new Set(questions.map(({ question }) => normalize(question))).size, 1000);
   assert.equal(new Set(questions.map(({ batch }) => batch)).size, 50);
   assert.deepEqual(Object.fromEntries(categories), {
-    "語彙": 200,
-    "文法": 200,
-    "並べ替え": 200,
-    "英作文": 200,
-    "読解": 200,
+    "語彙": 150,
+    "文法": 150,
+    "語形変化": 100,
+    "並べ替え": 150,
+    "空所補充": 100,
+    "英作文": 100,
+    "会話": 100,
+    "読解": 150,
   });
+  for (let batch = 1; batch <= 50; batch += 1) {
+    const set = questions.filter((question) => question.batch === batch);
+    assert.equal(set.length, 20, `set ${batch} must contain exactly 20 questions`);
+    assert.equal(new Set(set.map(({ category }) => category)).size, 8, `set ${batch} must mix all eight formats`);
+  }
   assert.ok(questions.every(({ id }) => id.startsWith("EN3-")), "new ids must not collide with previously delivered English questions");
 });
 

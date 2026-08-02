@@ -1320,7 +1320,9 @@ export default function Home() {
 
   useEffect(() => {
     if (!authUser) return;
-    const period = rankPeriod === "今週" ? "week" : rankPeriod === "今月" ? "month" : "today";
+    const period = view === "ranking"
+      ? rankPeriod === "今週" ? "week" : rankPeriod === "今月" ? "month" : "today"
+      : "today";
     const loadRankings = () => {
       setRankingLoading(true);
       void fetch(`/api/rankings?period=${period}`, { cache: "no-store" })
@@ -1334,7 +1336,7 @@ export default function Home() {
     loadRankings();
     const rankingTimer = window.setInterval(loadRankings, 15_000);
     return () => window.clearInterval(rankingTimer);
-  }, [authUser, rankPeriod]);
+  }, [authUser, rankPeriod, view]);
 
   useEffect(() => {
     if (!authUser) return;
@@ -1712,6 +1714,12 @@ export default function Home() {
     }));
   }, [rankingRows]);
   const myRanking = rankingEntries.find((entry) => entry.me);
+  const homeRankingEntries = useMemo(() => {
+    const topThree = rankingEntries.slice(0, 3);
+    const currentStudent = rankingEntries.find((entry) => entry.me);
+    if (!currentStudent || topThree.some((entry) => entry.id === currentStudent.id)) return topThree;
+    return [...topThree, currentStudent];
+  }, [rankingEntries]);
 
   const weeklyStartMs = weeklyTest ? new Date(weeklyTest.startsAt).getTime() : 0;
   const weeklyEndMs = weeklyTest ? weeklyStartMs + weeklyTest.durationMinutes * 60_000 : 0;
@@ -2507,6 +2515,25 @@ export default function Home() {
                   {studyMateRows.length === 0 && <p className="study-live-empty">自分の学習状況を読み込んでいます。</p>}
                 </div>
               </article>
+            </section>
+
+            <section className="home-ranking-card" aria-labelledby="home-ranking-title">
+              <div className="section-heading compact">
+                <div><p className="eyebrow">TODAY&apos;S RANKING</p><h2 id="home-ranking-title">今日の集中ランキング</h2></div>
+                <button className="text-button" onClick={() => { setRankPeriod("今日"); changeView("ranking"); }}>全員の順位を見る →</button>
+              </div>
+              {rankingLoading && homeRankingEntries.length === 0 && <p className="home-ranking-status">順位を集計しています…</p>}
+              {!rankingLoading && homeRankingEntries.length === 0 && <p className="home-ranking-status">今日の学習記録はまだありません。</p>}
+              <div className="home-ranking-list">
+                {homeRankingEntries.map((person) => (
+                  <article key={person.id} className={person.me ? "me" : ""}>
+                    <span className={`rank-number rank-${person.rank}`}>{person.rank}</span>
+                    <span className={`friend-avatar ${person.color}`}>{person.name[0]}</span>
+                    <div><strong>{person.name}{person.me && <em>YOU</em>}</strong><small>{person.questionsSolved}問</small></div>
+                    <span className="rank-time">{person.time}<small>集中時間</small></span>
+                  </article>
+                ))}
+              </div>
             </section>
           </>
         )}

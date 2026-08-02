@@ -12,6 +12,7 @@
     "test": "npm run build && node --test tests/rendered-html.test.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "questions:english": "node scripts/generate-english-bank.mjs",
+    "questions:science-social": "node scripts/generate-science-social-bank.mjs",
     "db:generate": "drizzle-kit generate"
   },
   "dependencies": {

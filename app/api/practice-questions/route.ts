@@ -9,6 +9,7 @@ import { ensureStudyRecordTables, recordQuestionDeliveries } from "../../../lib/
 type PracticeQuestion = {
   id: string;
   subject: string;
+  category?: string;
   unit: string;
   difficulty: string;
   question: string;
@@ -186,6 +187,99 @@ function selectSubjectQuestions(subject: string, seed: string) {
   return level55Ordered(subjectPool(subject), `${subject}:${seed}`);
 }
 
+const balancedCells: Record<string, Array<[string, string, number]>> = {
+  [subjectNames.science]: [
+    ["生物", "基本", 2], ["生物", "標準", 2], ["生物", "入試基礎", 1],
+    ["化学", "基本", 1], ["化学", "標準", 3], ["化学", "入試基礎", 1],
+    ["物理", "基本", 1], ["物理", "標準", 3], ["物理", "入試基礎", 1],
+    ["地学", "基本", 2], ["地学", "標準", 2], ["地学", "入試基礎", 1],
+  ],
+  [subjectNames.social]: [
+    ["地理", "基本", 2], ["地理", "標準", 4], ["地理", "入試基礎", 1],
+    ["歴史", "基本", 2], ["歴史", "標準", 4], ["歴史", "入試基礎", 2],
+    ["公民", "基本", 2], ["公民", "標準", 2], ["公民", "入試基礎", 1],
+  ],
+};
+
+const balancedHalfCells: Record<string, Array<[string, string, number]>> = {
+  [subjectNames.science]: [
+    ["生物", "基本", 1], ["生物", "標準", 1], ["生物", "入試基礎", 1],
+    ["化学", "基本", 1], ["化学", "標準", 2],
+    ["物理", "標準", 1], ["物理", "入試基礎", 1],
+    ["地学", "基本", 1], ["地学", "標準", 1],
+  ],
+  [subjectNames.social]: [
+    ["地理", "基本", 1], ["地理", "標準", 2], ["地理", "入試基礎", 1],
+    ["歴史", "基本", 1], ["歴史", "標準", 2],
+    ["公民", "基本", 1], ["公民", "標準", 1], ["公民", "入試基礎", 1],
+  ],
+};
+
+function takeBalancedBlock(items: PracticeQuestion[], subject: string, seedText: string) {
+  const shuffled = seededShuffle(uniqueQuestions(items.filter((question) => question.subject === subject)), seedText);
+  const selected: PracticeQuestion[] = [];
+  const selectedIds = new Set<string>();
+  for (const [category, difficulty, quota] of balancedCells[subject] ?? []) {
+    const matches = shuffled.filter((question) => question.category === category && question.difficulty === difficulty && !selectedIds.has(question.id));
+    for (const question of matches.slice(0, quota)) {
+      selected.push(question);
+      selectedIds.add(question.id);
+    }
+  }
+
+  // Near the end of a 1000-question round, a particular cell may be empty.
+  // Fill only the missing positions, keeping the request complete without
+  // duplicating a question inside the same set.
+  for (const question of shuffled) {
+    if (selected.length >= QUESTIONS_PER_SET) break;
+    if (selectedIds.has(question.id)) continue;
+    selected.push(question);
+    selectedIds.add(question.id);
+  }
+  return seededShuffle(selected, `${seedText}:display`);
+}
+
+function takeBalancedQuestions(items: PracticeQuestion[], subject: string, count: number, seedText: string) {
+  if (!balancedCells[subject]) return seededShuffle(uniqueQuestions(items), seedText).slice(0, count);
+  const remaining = [...items];
+  const selected: PracticeQuestion[] = [];
+  for (let block = 0; block < Math.ceil(count / QUESTIONS_PER_SET); block += 1) {
+    const next = takeBalancedBlock(remaining, subject, `${seedText}:${block}`);
+    selected.push(...next.slice(0, Math.min(QUESTIONS_PER_SET, count - selected.length)));
+    const ids = new Set(next.map((question) => question.id));
+    for (let index = remaining.length - 1; index >= 0; index -= 1) {
+      if (ids.has(remaining[index].id)) remaining.splice(index, 1);
+    }
+  }
+  return selected;
+}
+
+function takeBalancedMixed(items: PracticeQuestion[], count: number, seedText: string) {
+  const takeHalf = (subject: string, wanted: number) => {
+    const shuffled = seededShuffle(uniqueQuestions(items.filter((question) => question.subject === subject)), `${seedText}:${subject}`);
+    const selected: PracticeQuestion[] = [];
+    const selectedIds = new Set<string>();
+    for (const [category, difficulty, quota] of balancedHalfCells[subject] ?? []) {
+      for (const question of shuffled.filter((candidate) => candidate.category === category && candidate.difficulty === difficulty && !selectedIds.has(candidate.id)).slice(0, quota)) {
+        selected.push(question);
+        selectedIds.add(question.id);
+      }
+    }
+    for (const question of shuffled) {
+      if (selected.length >= wanted) break;
+      if (!selectedIds.has(question.id)) selected.push(question);
+    }
+    return selected.slice(0, wanted);
+  };
+  const scienceCount = Math.ceil(count / 2);
+  const socialCount = count - scienceCount;
+  const selected = [
+    ...takeHalf(subjectNames.science, scienceCount),
+    ...takeHalf(subjectNames.social, socialCount),
+  ];
+  return seededShuffle(selected, `${seedText}:mixed-display`);
+}
+
 export async function GET(request: Request) {
   const url = new URL(request.url);
   const subject = url.searchParams.get("subject") ?? "理社ミックス";
@@ -233,7 +327,12 @@ export async function GET(request: Request) {
   const filteredSource = source.filter((question) => !excludeIds.has(question.id) && !excludeKeys.has(questionKey(question)));
 
   const start = user && mode !== "focus" ? 0 : (set - 1) * count;
-  const returnedQuestions = filteredSource.slice(start, start + count);
+  const requestedSubjectIsKnown = Object.values(subjectNames).includes(subject);
+  const returnedQuestions = mode === "focus"
+    ? filteredSource.slice(start, start + count)
+    : requestedSubjectIsKnown
+      ? takeBalancedQuestions(filteredSource.slice(start), subject, count, randomSeed)
+      : takeBalancedMixed(filteredSource.slice(start), count, randomSeed);
   if (user && mode !== "focus" && returnedQuestions.length < count) {
     const selectedKeys = new Set(returnedQuestions.map(questionKey));
     const oldestDelivered = source

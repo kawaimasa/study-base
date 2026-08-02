@@ -197,6 +197,56 @@ test("Japanese and Math banks contain 50 balanced, duplicate-free entrance-exam 
   assert.ok(math.every(({ answer }) => !/\d+\.\d{5,}/.test(answer)), "Math answers must not expose floating-point artifacts");
 });
 
+test("Science and Social Studies contain balanced, mixed-format entrance-exam sets", async () => {
+  const [questions, practiceRoute] = await Promise.all([
+    readFile(new URL("app/question-bank.json", root), "utf8").then(JSON.parse),
+    readFile(new URL("app/api/practice-questions/route.ts", root), "utf8"),
+  ]);
+  const normalize = (value) => String(value).normalize("NFKC").replace(/\s+/g, " ").trim().toLowerCase();
+  const template = (value) => normalize(value).replace(/[0-9０-９]+(?:\.[0-9]+)?/g, "#");
+  const expected = [
+    { subject: "理科", prefix: "SC3-", categories: { "生物": 250, "化学": 250, "物理": 250, "地学": 250 }, categoriesPerSet: 4 },
+    { subject: "社会", prefix: "SO3-", categories: { "地理": 350, "歴史": 400, "公民": 250 }, categoriesPerSet: 3 },
+  ];
+
+  assert.equal(questions.length, 2000);
+  assert.equal(new Set(questions.map(({ id }) => id)).size, 2000);
+  assert.equal(new Set(questions.map(({ question }) => normalize(question))).size, 2000);
+  assert.ok(questions.every(({ question, answer, explanation, kind }) => question && answer && explanation && kind));
+  assert.ok(questions.every(({ question }) => !/確認\d+|小テスト：|復習問題：/.test(question)), "cosmetic duplicate labels must not return");
+
+  for (const bank of expected) {
+    const subjectQuestions = questions.filter(({ subject }) => subject === bank.subject);
+    const counts = new Map();
+    for (const question of subjectQuestions) counts.set(question.category, (counts.get(question.category) ?? 0) + 1);
+    assert.equal(subjectQuestions.length, 1000);
+    assert.deepEqual(Object.fromEntries(counts), bank.categories);
+    assert.ok(subjectQuestions.every(({ id }) => id.startsWith(bank.prefix)));
+    assert.ok(new Set(subjectQuestions.map(({ kind }) => kind)).size >= 25, `${bank.subject} must mix at least 25 task formats`);
+    const unitCounts = new Map();
+    const templateCounts = new Map();
+    for (const question of subjectQuestions) {
+      unitCounts.set(question.unit, (unitCounts.get(question.unit) ?? 0) + 1);
+      const key = template(question.question);
+      templateCounts.set(key, (templateCounts.get(key) ?? 0) + 1);
+    }
+    assert.ok(Math.max(...unitCounts.values()) <= 60, `${bank.subject} must not concentrate more than 60 questions in one unit`);
+    assert.ok(Math.max(...templateCounts.values()) <= 35, `${bank.subject} must not repeat one numeric template more than 35 times`);
+    for (let batch = 1; batch <= 50; batch += 1) {
+      const set = subjectQuestions.filter((question) => question.batch === batch);
+      assert.equal(set.length, 20, `${bank.subject} set ${batch} must contain exactly 20 questions`);
+      assert.equal(new Set(set.map(({ category }) => category)).size, bank.categoriesPerSet);
+    }
+  }
+
+  assert.match(practiceRoute, /const balancedCells/);
+  assert.match(practiceRoute, /\["生物", "基本", 2\]/);
+  assert.match(practiceRoute, /\["地理", "標準", 4\]/);
+  assert.match(practiceRoute, /function takeBalancedQuestions/);
+  assert.match(practiceRoute, /function takeBalancedMixed/);
+  assert.match(practiceRoute, /takeBalancedQuestions\(filteredSource\.slice\(start\), subject, count, randomSeed\)/);
+});
+
 test("focus, leave and juku time survive navigation without inflating verified study", async () => {
   const [page, guardianRoute, presenceHelper, guardianHelper] = await Promise.all([
     readFile(new URL("app/page.tsx", root), "utf8"),
@@ -229,6 +279,15 @@ test("focus, leave and juku time survive navigation without inflating verified s
   assert.match(guardianRoute, /MAX\(daily_summaries\.focus_seconds, excluded\.focus_seconds\)/);
   assert.match(guardianRoute, /state_updated_at_ms >= daily_away_stats\.state_updated_at_ms/);
   assert.match(guardianHelper, /state_updated_at_ms INTEGER NOT NULL DEFAULT 0/);
+});
+
+test("home shows today's live ranking instead of hiding ranking data behind the ranking tab", async () => {
+  const page = await readFile(new URL("app/page.tsx", root), "utf8");
+  assert.match(page, /const homeRankingEntries = useMemo/);
+  assert.match(page, /TODAY&apos;S RANKING/);
+  assert.match(page, /今日の集中ランキング/);
+  assert.match(page, /homeRankingEntries\.map/);
+  assert.match(page, /setRankPeriod\("今日"\); changeView\("ranking"\)/);
 });
 
 test("practice drafts, active students and protected weekly tests survive real usage", async () => {

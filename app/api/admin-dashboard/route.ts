@@ -30,6 +30,11 @@ export async function GET(request: Request) {
       SELECT student_id, COUNT(*) AS questions_solved,
         COALESCE(SUM(CASE WHEN result = 'correct' THEN 1 ELSE 0 END), 0) AS correct_answers
       FROM practice_attempts WHERE date(attempted_at, '+9 hours') = ? GROUP BY student_id
+    ), away_stats AS (
+      SELECT student_id,
+        COALESCE(away_seconds, 0) + COALESCE(idle_seconds, 0) + COALESCE(juku_away_seconds, 0) AS away_seconds,
+        COALESCE(away_count, 0) + COALESCE(idle_count, 0) + COALESCE(juku_away_count, 0) AS away_count
+      FROM daily_away_stats WHERE summary_date = ?
     )
     SELECT
       u.id,
@@ -39,6 +44,8 @@ export async function GET(request: Request) {
       MAX(COALESCE(sf.focus_seconds, 0), COALESCE(s.focus_seconds, 0)) AS focus_seconds,
       MAX(COALESCE(a.questions_solved, 0), COALESCE(s.questions_solved, 0)) AS questions_solved,
       MAX(COALESCE(a.correct_answers, 0), COALESCE(s.correct_answers, 0)) AS correct_answers,
+      COALESCE(aw.away_seconds, 0) AS away_seconds,
+      COALESCE(aw.away_count, 0) AS away_count,
       CASE WHEN g.parent_line_user_id IS NOT NULL THEN 1 ELSE 0 END AS guardian_connected,
       CASE WHEN g.parent_line_user_id IS NULL AND g.pairing_used_at IS NULL AND datetime(g.pairing_expires_at) > CURRENT_TIMESTAMP THEN g.pairing_code ELSE NULL END AS pairing_code,
       COALESCE(g.notifications_enabled, 0) AS notifications_enabled
@@ -47,7 +54,8 @@ export async function GET(request: Request) {
     LEFT JOIN daily_summaries s ON s.student_id = u.id AND s.summary_date = ?
     LEFT JOIN session_focus sf ON sf.student_id = u.id
     LEFT JOIN attempts a ON a.student_id = u.id
-    ORDER BY u.created_at DESC LIMIT 100`).bind(today, today, today).all<Record<string, unknown>>();
+    LEFT JOIN away_stats aw ON aw.student_id = u.id
+    ORDER BY u.created_at DESC LIMIT 100`).bind(today, today, today, today).all<Record<string, unknown>>();
   const totals = results.filter((row) => Boolean(row.is_active)).reduce((sum, row) => ({
     student_count: sum.student_count + 1,
     focus_seconds: sum.focus_seconds + Number(row.focus_seconds ?? 0),

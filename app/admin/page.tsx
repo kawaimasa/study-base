@@ -11,6 +11,8 @@ type StudentRow = {
   focus_seconds: number;
   questions_solved: number;
   correct_answers: number;
+  away_seconds: number;
+  away_count: number;
   guardian_connected: number;
   pairing_code: string | null;
   notifications_enabled: number;
@@ -332,13 +334,13 @@ export default function AdminPage() {
                 </button>
               ))}
             </div>
-            <table><thead><tr><th>生徒</th><th>集中時間</th><th>問題数</th><th>正答率</th><th>接続状況</th><th>朝7時通知</th><th>連携コード</th></tr></thead><tbody>
+            <table><thead><tr><th>生徒</th><th>集中時間</th><th>離脱時間</th><th>離脱回数</th><th>問題数</th><th>正答率</th><th>接続状況</th><th>朝7時通知</th><th>連携コード</th></tr></thead><tbody>
               {(dashboard?.students ?? []).map((student) => {
                 const studentAccuracy = Number(student.questions_solved) > 0 ? Math.round(Number(student.correct_answers) / Number(student.questions_solved) * 100) : 0;
                 const enabled = Boolean(student.notifications_enabled);
-                return <tr key={student.id}><td><span className="student-initial">{String(student.display_name).slice(0, 1)}</span><strong>{student.display_name}</strong></td><td>{formatMinutes(student.focus_seconds)}</td><td>{student.questions_solved}問</td><td>{studentAccuracy}%</td><td><span className={student.guardian_connected ? "admin-connected" : "admin-unconnected"}>{student.guardian_connected ? "連携済み" : "未連携"}</span></td><td><button className={`admin-line-toggle${enabled ? " enabled" : ""}`} disabled={savingStudentId === student.id} onClick={() => void updateGuardianNotification(student.id, !enabled)} aria-pressed={enabled}>{savingStudentId === student.id ? "保存中…" : enabled ? "通知 ON" : "通知 OFF"}</button></td><td><code className="admin-pairing-code">{student.pairing_code ?? "ONで発行"}</code></td></tr>;
+                return <tr key={student.id}><td><span className="student-initial">{String(student.display_name).slice(0, 1)}</span><strong>{student.display_name}</strong></td><td>{formatMinutes(student.focus_seconds)}</td><td>{formatMinutes(student.away_seconds)}</td><td>{student.away_count}回</td><td>{student.questions_solved}問</td><td>{studentAccuracy}%</td><td><span className={student.guardian_connected ? "admin-connected" : "admin-unconnected"}>{student.guardian_connected ? "連携済み" : "未連携"}</span></td><td><button className={`admin-line-toggle${enabled ? " enabled" : ""}`} disabled={savingStudentId === student.id} onClick={() => void updateGuardianNotification(student.id, !enabled)} aria-pressed={enabled}>{savingStudentId === student.id ? "保存中…" : enabled ? "通知 ON" : "通知 OFF"}</button></td><td><code className="admin-pairing-code">{student.pairing_code ?? "ONで発行"}</code></td></tr>;
               })}
-              {(dashboard?.students.length ?? 0) === 0 && <tr><td className="admin-empty" colSpan={7}>生徒が登録されると、ここに表示されます。</td></tr>}
+              {(dashboard?.students.length ?? 0) === 0 && <tr><td className="admin-empty" colSpan={9}>生徒が登録されると、ここに表示されます。</td></tr>}
             </tbody></table>
           </div>
         </section>

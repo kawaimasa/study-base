@@ -54,12 +54,21 @@ export async function GET(request: Request) {
       .bind(student.id, summaryDate).all<{ attempted_at: string }>(),
   ]);
 
-  return Response.json({
+  const diagnostics = {
     student,
     summaryDate,
     sessions: sessions.results ?? [],
     attemptTimes: (attempts.results ?? []).map((row) => row.attempted_at),
-  });
+  };
+  if (url.searchParams.get("format") === "html") {
+    const json = JSON.stringify(diagnostics, null, 2)
+      .replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+    return new Response(`<!doctype html><meta charset="utf-8"><title>Focus diagnostics</title>
+      <pre>${json}</pre><form method="post"><input type="hidden" name="studentId" value="${student.id}">
+      <input type="hidden" name="summaryDate" value="${summaryDate}"><label>補正秒数 <input name="activeSeconds" type="number" min="0" max="21600"></label>
+      <button type="submit">本日分を反映</button></form>`, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+  }
+  return Response.json(diagnostics);
 }
 
 export async function POST(request: Request) {
@@ -67,8 +76,19 @@ export async function POST(request: Request) {
   if ("response" in auth) return auth.response;
   const { runtime } = auth;
   let payload: FocusCorrectionPayload;
+  const isForm = request.headers.get("content-type")?.includes("application/x-www-form-urlencoded")
+    || request.headers.get("content-type")?.includes("multipart/form-data");
   try {
-    payload = await request.json() as FocusCorrectionPayload;
+    if (isForm) {
+      const form = await request.formData();
+      payload = {
+        studentId: String(form.get("studentId") ?? ""),
+        summaryDate: String(form.get("summaryDate") ?? ""),
+        activeSeconds: Number(form.get("activeSeconds")),
+      };
+    } else {
+      payload = await request.json() as FocusCorrectionPayload;
+    }
   } catch {
     return Response.json({ error: "valid JSON is required" }, { status: 400 });
   }
@@ -97,5 +117,10 @@ export async function POST(request: Request) {
       updated_at = CURRENT_TIMESTAMP`)
     .bind(studentId, sessionId, summaryDate, activeSeconds, now, now).run();
 
-  return Response.json({ saved: true, student, summaryDate, activeSeconds, sessionId });
+  const result = { saved: true, student, summaryDate, activeSeconds, sessionId };
+  if (isForm) {
+    return new Response(`<!doctype html><meta charset="utf-8"><title>Saved</title><h1>反映しました</h1><pre>${JSON.stringify(result, null, 2)}</pre>`,
+      { headers: { "Content-Type": "text/html; charset=utf-8" } });
+  }
+  return Response.json(result);
 }

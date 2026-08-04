@@ -30,6 +30,12 @@ export async function GET(request: Request) {
       SELECT student_id, COUNT(*) AS questions_solved,
         COALESCE(SUM(CASE WHEN result = 'correct' THEN 1 ELSE 0 END), 0) AS correct_answers
       FROM practice_attempts WHERE date(attempted_at, '+9 hours') = ? GROUP BY student_id
+    ), juku_times AS (
+      SELECT student_id,
+        COALESCE(SUM(MAX(0, MIN(21600, CAST((last_seen_at_ms - started_at_ms) / 1000 AS INTEGER)))), 0) AS juku_seconds
+      FROM study_session_totals
+      WHERE summary_date = ? AND is_juku = 1
+      GROUP BY student_id
     ), away_stats AS (
       SELECT student_id,
         COALESCE(away_seconds, 0) + COALESCE(idle_seconds, 0) + COALESCE(juku_away_seconds, 0) AS away_seconds,
@@ -42,6 +48,7 @@ export async function GET(request: Request) {
       u.created_at,
       u.is_active,
       MAX(COALESCE(sf.focus_seconds, 0), COALESCE(s.focus_seconds, 0)) AS focus_seconds,
+      COALESCE(jt.juku_seconds, 0) AS juku_seconds,
       MAX(COALESCE(a.questions_solved, 0), COALESCE(s.questions_solved, 0)) AS questions_solved,
       MAX(COALESCE(a.correct_answers, 0), COALESCE(s.correct_answers, 0)) AS correct_answers,
       COALESCE(aw.away_seconds, 0) AS away_seconds,
@@ -53,15 +60,17 @@ export async function GET(request: Request) {
     LEFT JOIN guardian_profiles g ON g.student_id = u.id
     LEFT JOIN daily_summaries s ON s.student_id = u.id AND s.summary_date = ?
     LEFT JOIN session_focus sf ON sf.student_id = u.id
+    LEFT JOIN juku_times jt ON jt.student_id = u.id
     LEFT JOIN attempts a ON a.student_id = u.id
     LEFT JOIN away_stats aw ON aw.student_id = u.id
-    ORDER BY u.created_at DESC LIMIT 100`).bind(today, today, today, today).all<Record<string, unknown>>();
+    ORDER BY u.created_at DESC LIMIT 100`).bind(today, today, today, today, today).all<Record<string, unknown>>();
   const totals = results.filter((row) => Boolean(row.is_active)).reduce((sum, row) => ({
     student_count: sum.student_count + 1,
     focus_seconds: sum.focus_seconds + Number(row.focus_seconds ?? 0),
+    juku_seconds: sum.juku_seconds + Number(row.juku_seconds ?? 0),
     questions_solved: sum.questions_solved + Number(row.questions_solved ?? 0),
     correct_answers: sum.correct_answers + Number(row.correct_answers ?? 0),
-  }), { student_count: 0, focus_seconds: 0, questions_solved: 0, correct_answers: 0 });
+  }), { student_count: 0, focus_seconds: 0, juku_seconds: 0, questions_solved: 0, correct_answers: 0 });
   return Response.json({
     today,
     admin,

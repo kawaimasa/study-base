@@ -813,12 +813,12 @@ export default function Home() {
       const elapsed = Math.floor((now - focusLastTickAtRef.current) / 1000);
       if (elapsed < 1) return;
       focusLastTickAtRef.current += elapsed * 1000;
-      if (!document.hidden && awayStartedAtRef.current === null && !idleActiveRef.current && !jukuModeActive) {
+      if (!document.hidden && awayStartedAtRef.current === null && !idleActiveRef.current && !jukuNonProblemAway) {
         setTrackedFocusSeconds((current) => current + elapsed);
       }
     }, 250);
     return () => window.clearInterval(focusCounter);
-  }, [jukuModeActive, sessionActive]);
+  }, [jukuNonProblemAway, sessionActive]);
 
   useEffect(() => {
     const markStudyAction = () => {
@@ -1408,21 +1408,22 @@ export default function Home() {
     }
 
     presenceLastTickAtRef.current = Date.now();
-    sendPresence(document.hidden ? "away" : "studying");
+    const currentPresenceStatus = () => document.hidden || jukuNonProblemAway ? "away" : "studying";
+    sendPresence(currentPresenceStatus());
     const secondTimer = window.setInterval(() => {
       const now = Date.now();
       const elapsed = Math.floor((now - presenceLastTickAtRef.current) / 1000);
       if (elapsed < 1) return;
       presenceLastTickAtRef.current += elapsed * 1000;
-      if (document.hidden || awayStartedAtRef.current !== null || idleActiveRef.current || jukuModeActive) return;
+      if (document.hidden || awayStartedAtRef.current !== null || idleActiveRef.current || jukuNonProblemAway) return;
       presenceActiveSecondsRef.current += elapsed;
       setPresenceActiveSeconds(presenceActiveSecondsRef.current);
     }, 250);
-    const heartbeatTimer = window.setInterval(() => sendPresence(document.hidden ? "away" : "studying"), 15_000);
+    const heartbeatTimer = window.setInterval(() => sendPresence(currentPresenceStatus()), 15_000);
     const handleVisibility = () => {
       presenceLastTickAtRef.current = Date.now();
       focusLastTickAtRef.current = Date.now();
-      sendPresence(document.hidden ? "away" : "studying", document.hidden);
+      sendPresence(currentPresenceStatus(), document.hidden);
     };
     const handlePageHide = () => sendPresence("away", true);
     document.addEventListener("visibilitychange", handleVisibility);
@@ -1435,7 +1436,7 @@ export default function Home() {
       window.removeEventListener("pagehide", handlePageHide);
       window.removeEventListener("pageshow", handleVisibility);
     };
-  }, [authUser, jukuModeActive, sessionActive]);
+  }, [authUser, challengeMinutes, freeStudyAction, freeStudyPlan, jukuNonProblemAway, selectedSubject, sessionActive, setNumber, timerMode, view]);
 
   useEffect(() => {
     if (!authUser) return;
